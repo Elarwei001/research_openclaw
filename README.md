@@ -5,7 +5,13 @@ This repository contains research documentation and analysis of OpenClaw's archi
 ## Contents
 
 ### Architecture Analysis
+
+#### Memory System
 - [Memory System Architecture](architecture/memory/openclaw-memory-system-architecture.md) - Comprehensive analysis of OpenClaw's memory system design, including short-term/long-term memory mechanisms, data flows, and technical implementation details
+- [Memory Indexing Mechanisms](architecture/memory/memory-indexing-mechanisms.md) - Deep dive into when and how workspace files get indexed into SQLite for semantic search
+
+#### Security
+- [Pairing Mechanism](architecture/security/pairing-mechanism.md) - OpenClaw's pairing security system for messaging channels, including DM policy enforcement and owner approval workflows
 
 ## Overview
 
@@ -17,8 +23,11 @@ OpenClaw is an innovative AI agent framework that bridges the gap between epheme
 research_openclaw/
 ├── README.md                                 # This file
 └── architecture/                            # Architecture documentation
-    └── memory/                             # Memory system docs
-        └── openclaw-memory-system-architecture.md
+    ├── memory/                             # Memory system docs
+    │   ├── openclaw-memory-system-architecture.md
+    │   └── memory-indexing-mechanisms.md
+    └── security/                           # Security docs
+        └── pairing-mechanism.md
 ```
 
 ## Contributing
