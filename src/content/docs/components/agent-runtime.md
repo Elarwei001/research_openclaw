@@ -21,22 +21,66 @@ The Agent Runtime System is the brain of OpenClaw, responsible for executing AI 
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Runtime["Agent Runtime System"]
+        direction TB
+        
+        subgraph Core["Core Components"]
+            MM["Model Manager<br/>15+ Providers"]
+            SM["Session Manager<br/>Context & State"]
+            TE["Tool Engine<br/>Sandboxed Execution"]
+        end
+        
+        subgraph Support["Support Systems"]
+            AP["Auth Profiles<br/>Multi-Auth & Rotation"]
+            MS["Memory System<br/>Vector Search"]
+            RG["Response Generator<br/>Streaming"]
+        end
+        
+        Core <--> Support
+    end
+    
+    Gateway["Gateway Server"] --> Runtime
+    Runtime --> Providers["AI Providers"]
+    Runtime --> Storage["Storage Layer"]
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  Agent Runtime System                       │
-├─────────────────┬─────────────────┬─────────────────────────┤
-│ Model Manager   │ Session Manager │ Tool Engine             │
-├─────────────────┼─────────────────┼─────────────────────────┤
-│ • 15+ Providers │ • Conversation  │ • Sandboxed Execution   │
-│ • Failover      │   State         │ • Docker Containers     │
-│ • Load Balance  │ • Context Mgmt  │ • Resource Limits       │
-├─────────────────┼─────────────────┼─────────────────────────┤
-│ Auth Profiles   │ Memory System   │ Response Generator      │
-├─────────────────┼─────────────────┼─────────────────────────┤
-│ • Multi-Auth    │ • Vector Search │ • Stream Processing     │
-│ • Auto Rotation │ • Embeddings    │ • Format Adaptation     │
-│ • Cooldowns     │ • Context Aware │ • Error Handling        │
-└─────────────────┴─────────────────┴─────────────────────────┘
+
+### Agent Execution Flow
+
+```mermaid
+sequenceDiagram
+    participant GW as Gateway
+    participant AR as Agent Runner
+    participant MM as Model Manager
+    participant SM as Session Manager
+    participant MS as Memory Search
+    participant AI as AI Provider
+    participant TE as Tool Engine
+    
+    GW->>AR: Agent Request
+    AR->>SM: Load Session
+    SM-->>AR: Session Context
+    
+    AR->>MS: Query Relevant Memory
+    MS-->>AR: Context Results
+    
+    AR->>MM: Select Model
+    MM-->>AR: Model Instance
+    
+    AR->>AI: Generate Response
+    AI-->>AR: Response (with tool calls)
+    
+    opt Tool Execution
+        AR->>TE: Execute Tools
+        TE->>TE: Sandbox Execution
+        TE-->>AR: Tool Results
+        AR->>AI: Continue Generation
+        AI-->>AR: Final Response
+    end
+    
+    AR->>SM: Update Session
+    AR-->>GW: Agent Response
 ```
 
 ## Key Components
@@ -102,6 +146,33 @@ class ModelCatalog {
 ```
 
 **Supported Providers:**
+
+```mermaid
+flowchart LR
+    subgraph Commercial["Commercial Providers"]
+        OpenAI["OpenAI<br/>GPT-4, GPT-3.5"]
+        Anthropic["Anthropic<br/>Claude-3, 3.5"]
+        Google["Google<br/>Gemini Pro/Ultra"]
+        Azure["Azure OpenAI"]
+    end
+    
+    subgraph OpenSource["Open Source"]
+        Ollama["Ollama"]
+        LocalAI["LocalAI"]
+        vLLM["vLLM"]
+    end
+    
+    subgraph Other["Other Providers"]
+        Perplexity["Perplexity"]
+        Groq["Groq"]
+        Together["Together"]
+    end
+    
+    ModelManager["Model Manager"] --> Commercial
+    ModelManager --> OpenSource
+    ModelManager --> Other
+```
+
 - **OpenAI**: GPT-4, GPT-4 Turbo, GPT-3.5
 - **Anthropic**: Claude-3, Claude-3.5, Claude-2
 - **Google**: Gemini Pro, Gemini Ultra, PaLM
@@ -403,6 +474,29 @@ class ResponseCache {
 ## Error Handling & Recovery
 
 ### Failover Strategy
+
+```mermaid
+flowchart TD
+    A[Request] --> B{Primary Provider}
+    B -->|Success| C[Return Response]
+    B -->|Failure| D{Retry Count < Max?}
+    
+    D -->|Yes| E[Exponential Backoff]
+    E --> B
+    
+    D -->|No| F{Fallback Available?}
+    F -->|Yes| G[Select Fallback Provider]
+    G --> H{Fallback Provider}
+    H -->|Success| C
+    H -->|Failure| F
+    
+    F -->|No| I{Circuit Breaker}
+    I -->|Open| J[Return Error]
+    I -->|Half-Open| K[Test Request]
+    K -->|Success| L[Close Circuit]
+    L --> B
+    K -->|Failure| J
+```
 
 ```typescript
 interface FailoverConfig {

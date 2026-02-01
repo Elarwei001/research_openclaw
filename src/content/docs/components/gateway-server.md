@@ -21,23 +21,65 @@ The Gateway Server is the central hub of the OpenClaw platform, serving as the p
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph GW["Gateway Server"]
+        direction TB
+        subgraph Layer1["Transport Layer"]
+            HTTP["HTTP Server"]
+            WS["WebSocket Server"]
+        end
+        subgraph Layer2["Security Layer"]
+            Auth["Authentication"]
+            Session["Session Management"]
+        end
+        subgraph Layer3["Routing Layer"]
+            Router["Request Router"]
+            Events["Event Broadcaster"]
+        end
+        subgraph Layer4["Distribution Layer"]
+            LB["Load Balancer"]
+            Discovery["Service Discovery"]
+        end
+    end
+    
+    Layer1 --> Layer2
+    Layer2 --> Layer3
+    Layer3 --> Layer4
+    
+    Layer4 --> Agents["Agent Runtime"]
+    Layer4 --> Plugins["Plugin Ecosystem"]
+    
+    Clients["External Clients"] --> HTTP
+    Clients --> WS
 ```
-┌─────────────────────────────────────────┐
-│              Gateway Server              │
-├─────────────────┬───────────────────────┤
-│   HTTP Server   │   WebSocket Server    │
-├─────────────────┼───────────────────────┤
-│  Authentication │   Session Management  │
-├─────────────────┼───────────────────────┤
-│ Request Router  │   Event Broadcaster   │
-├─────────────────┼───────────────────────┤
-│ Load Balancer   │   Service Discovery   │
-└─────────────────┴───────────────────────┘
-           │                     │
-    ┌─────────────┐       ┌─────────────┐
-    │   Agents    │       │   Plugins   │
-    │  Runtime    │       │  Ecosystem  │
-    └─────────────┘       └─────────────┘
+
+### Request Processing Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as HTTP/WS Server
+    participant A as Auth System
+    participant R as Request Router
+    participant L as Load Balancer
+    participant AG as Agent
+    
+    C->>H: Incoming Request
+    H->>A: Validate Credentials
+    A-->>H: Auth Result
+    
+    alt Auth Failed
+        H-->>C: 401 Unauthorized
+    else Auth Success
+        H->>R: Route Request
+        R->>L: Select Agent
+        L->>AG: Forward Request
+        AG-->>L: Response
+        L-->>R: Return Response
+        R-->>H: Formatted Response
+        H-->>C: Deliver Response
+    end
 ```
 
 ## Key Components
@@ -200,6 +242,37 @@ POST /api/v1/reload           - Reload configuration
 
 ## WebSocket Events
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Gateway
+    participant Agent
+    
+    Note over Client,Gateway: Connection Lifecycle
+    Client->>Gateway: Connect (WSS)
+    Gateway-->>Client: Connection Established
+    
+    loop Heartbeat
+        Client->>Gateway: heartbeat
+        Gateway-->>Client: heartbeat
+    end
+    
+    Note over Client,Agent: Session Operations
+    Client->>Gateway: session.join
+    Gateway->>Agent: Subscribe client
+    Agent-->>Gateway: Session state
+    Gateway-->>Client: session.updated
+    
+    Note over Client,Agent: Message Exchange
+    Client->>Gateway: message.send
+    Gateway->>Agent: Process message
+    Agent-->>Gateway: Response ready
+    Gateway-->>Client: message.received
+    
+    Client->>Gateway: session.leave
+    Gateway->>Agent: Unsubscribe client
+```
+
 ### Client → Gateway
 
 ```typescript
@@ -225,6 +298,35 @@ interface GatewayEvents {
 ```
 
 ## Security Features
+
+```mermaid
+flowchart LR
+    subgraph Network["Network Security"]
+        TLS["TLS 1.3"]
+        HTTPS["HTTPS Only"]
+        WSS["WSS"]
+    end
+    
+    subgraph Auth["Authentication"]
+        Device["Device Auth"]
+        OAuth["OAuth 2.0"]
+        APIKey["API Keys"]
+    end
+    
+    subgraph Access["Access Control"]
+        RBAC["Role-Based"]
+        Perms["Permissions"]
+        Session["Sessions"]
+    end
+    
+    subgraph Protection["Protection"]
+        Rate["Rate Limiting"]
+        DDoS["DDoS Protection"]
+        Valid["Validation"]
+    end
+    
+    Client --> Network --> Auth --> Access --> Protection --> Server["Gateway Core"]
+```
 
 ### 1. Authentication & Authorization
 

@@ -61,8 +61,14 @@ sequenceDiagram
 ## Inbound Message Flow
 
 ### 1. Channel Input Processing
-```
-Raw Platform Message → Channel Normalization → Common Format
+
+```mermaid
+flowchart LR
+    A[Raw Platform<br/>Message] --> B[Channel Plugin]
+    B --> C[Format<br/>Normalization]
+    C --> D[Validation]
+    D --> E[Media<br/>Processing]
+    E --> F[Common<br/>Format]
 ```
 
 **Steps:**
@@ -72,8 +78,21 @@ Raw Platform Message → Channel Normalization → Common Format
 4. **Media Processing**: Download and stage media attachments
 
 ### 2. Gateway Routing
-```
-Normalized Message → Authentication → Rate Limiting → Allowlist Check → Agent Selection
+
+```mermaid
+flowchart TD
+    A[Normalized Message] --> B{Authentication}
+    B -->|Valid| C{Rate Limit}
+    B -->|Invalid| X[Reject]
+    
+    C -->|OK| D{Allowlist Check}
+    C -->|Exceeded| Y[Queue/Throttle]
+    
+    D -->|Allowed| E[Agent Selection]
+    D -->|Denied| Z[Drop]
+    
+    E --> F{Load Balance}
+    F --> G[Selected Agent]
 ```
 
 **Routing Criteria:**
@@ -84,8 +103,22 @@ Normalized Message → Authentication → Rate Limiting → Allowlist Check → 
 - Message content patterns
 
 ### 3. Agent Processing
-```
-Agent Request → Session Loading → Memory Retrieval → AI Processing → Tool Execution → Response Generation
+
+```mermaid
+flowchart TD
+    A[Agent Request] --> B[Load Session]
+    B --> C[Query Memory]
+    C --> D[Build Context]
+    D --> E[Call AI Provider]
+    
+    E --> F{Tool Calls?}
+    F -->|Yes| G[Execute in Sandbox]
+    G --> H[Process Results]
+    H --> E
+    
+    F -->|No| I[Generate Response]
+    I --> J[Update Session]
+    J --> K[Return Response]
 ```
 
 **Processing Steps:**
@@ -99,8 +132,14 @@ Agent Request → Session Loading → Memory Retrieval → AI Processing → Too
 ## Outbound Message Flow
 
 ### 1. Response Formatting
-```
-Agent Response → Platform Formatting → Constraint Application → Media Processing
+
+```mermaid
+flowchart LR
+    A[Agent Response] --> B[Platform<br/>Formatting]
+    B --> C[Apply<br/>Constraints]
+    C --> D[Process<br/>Media]
+    D --> E[Add<br/>Metadata]
+    E --> F[Ready to<br/>Send]
 ```
 
 **Formatting Steps:**
@@ -110,31 +149,58 @@ Agent Response → Platform Formatting → Constraint Application → Media Proc
 - Add platform-specific metadata
 
 ### 2. Delivery Tracking
-```
-Formatted Message → Channel Delivery → Delivery Confirmation → Status Tracking
+
+```mermaid
+flowchart LR
+    A[Formatted<br/>Message] --> B[Channel<br/>Delivery]
+    B --> C{Delivered?}
+    C -->|Yes| D[Confirm<br/>Delivery]
+    C -->|No| E{Retry?}
+    E -->|Yes| B
+    E -->|No| F[Log Failure]
+    D --> G[Track Status]
 ```
 
 ## Error Handling Flow
 
+```mermaid
+flowchart TD
+    subgraph AuthErr["Authentication Errors"]
+        A1[Auth Failure] --> A2[Error Response]
+        A2 --> A3[User Notification]
+        A3 --> A4[Retry/Recovery]
+    end
+    
+    subgraph RateErr["Rate Limiting"]
+        R1[Rate Exceeded] --> R2[Delay/Queue]
+        R2 --> R3[Retry Logic]
+        R3 --> R4[Success/Failure]
+    end
+    
+    subgraph AgentErr["Agent Failures"]
+        G1[Agent Error] --> G2[Fallback Agent]
+        G2 --> G3[Error Recovery]
+        G3 --> G4[User Notification]
+    end
+    
+    subgraph ToolErr["Tool Errors"]
+        T1[Tool Failure] --> T2[Sandbox Cleanup]
+        T2 --> T3[Error Report]
+        T3 --> T4[Graceful Degradation]
+    end
+```
+
 ### Authentication Errors
-```
 Auth Failure → Error Response → User Notification → Retry/Recovery
-```
 
 ### Rate Limiting
-```
 Rate Exceeded → Delay/Queue → Retry Logic → Success/Failure
-```
 
 ### Agent Failures
-```
 Agent Error → Fallback Agent → Error Recovery → User Notification
-```
 
 ### Tool Execution Errors
-```
 Tool Failure → Sandbox Cleanup → Error Report → Graceful Degradation
-```
 
 ## Message Types and Routing
 

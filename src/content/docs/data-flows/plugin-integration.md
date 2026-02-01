@@ -32,8 +32,24 @@ stateDiagram-v2
 ## Plugin Discovery and Loading
 
 ### 1. Discovery Process
-```
-Directory Scan → Manifest Validation → Dependency Check → Load Queue
+
+```mermaid
+flowchart TD
+    A[Start Discovery] --> B[Scan extensions/]
+    B --> C[Find Plugin Dirs]
+    C --> D[Parse Manifests]
+    
+    D --> E{Valid Manifest?}
+    E -->|Yes| F[Check Dependencies]
+    E -->|No| G[Log Error & Skip]
+    
+    F --> H{Dependencies Met?}
+    H -->|Yes| I[Add to Load Queue]
+    H -->|No| J[Queue for Later]
+    
+    I --> K[Resolve Load Order]
+    J --> K
+    K --> L[Ready to Load]
 ```
 
 **Discovery Steps:**
@@ -82,8 +98,30 @@ interface PluginManifest {
 ## Plugin Registration Flow
 
 ### 1. Registration Process
-```
-Plugin Load → Interface Validation → Service Registration → Capability Advertisement
+
+```mermaid
+sequenceDiagram
+    participant PL as Plugin Loader
+    participant PM as Plugin Manager
+    participant R as Registry
+    participant C as Config Manager
+    participant E as Event Bus
+    
+    PL->>PM: Load Plugin
+    PM->>PM: Validate Interfaces
+    
+    alt Validation Success
+        PM->>C: Load Configuration
+        C-->>PM: Config Data
+        PM->>PM: Initialize Plugin
+        PM->>R: Register Services
+        R-->>PM: Registration ID
+        PM->>E: Advertise Capabilities
+        E-->>PM: Acknowledged
+        PM-->>PL: Plugin Active
+    else Validation Failed
+        PM-->>PL: Error: Invalid Interface
+    end
 ```
 
 **Registration Steps:**
@@ -114,8 +152,23 @@ class PluginRegistry {
 ## Hot Reload Mechanism
 
 ### 1. Hot Reload Trigger
-```
-File Change → Debounce → Validation → Graceful Swap → Activation
+
+```mermaid
+flowchart TD
+    A[File Change] --> B[Debounce Timer]
+    B --> C{Timer Expired?}
+    C -->|No| B
+    C -->|Yes| D[Load New Version]
+    
+    D --> E{Validation OK?}
+    E -->|No| F[Keep Old Plugin]
+    E -->|Yes| G[Capture Old State]
+    
+    G --> H[Stop Old Plugin]
+    H --> I[Initialize New Plugin]
+    I --> J[Restore State]
+    J --> K[Update Services]
+    K --> L[Activate New Plugin]
 ```
 
 **Hot Reload Process:**
@@ -144,8 +197,30 @@ interface PluginStateManager {
 ## Inter-Plugin Communication
 
 ### 1. Event System
-```
-Plugin A → Event Bus → Plugin B
+
+```mermaid
+sequenceDiagram
+    participant PA as Plugin A
+    participant EB as Event Bus
+    participant PB as Plugin B
+    participant PC as Plugin C
+    
+    PA->>EB: Publish Event
+    
+    par Async Delivery
+        EB->>PB: Route Event
+        EB->>PC: Route Event
+    end
+    
+    PB->>PB: Process Event
+    PC->>PC: Process Event
+    
+    opt Response Required
+        PB-->>EB: Response
+        PC-->>EB: Response
+        EB->>EB: Aggregate Responses
+        EB-->>PA: Collected Responses
+    end
 ```
 
 **Event Flow:**
@@ -174,8 +249,27 @@ interface EventBus {
 ```
 
 ### 3. Service Dependencies
-```
-Plugin Request → Service Discovery → Capability Matching → Service Invocation
+
+```mermaid
+flowchart TD
+    A[Plugin Request] --> B[Service Discovery]
+    B --> C[Find by Capability]
+    C --> D{Multiple Providers?}
+    
+    D -->|Yes| E[Load Balance]
+    D -->|No| F[Single Provider]
+    
+    E --> G[Select Provider]
+    F --> G
+    
+    G --> H{Circuit Open?}
+    H -->|Yes| I[Try Fallback]
+    H -->|No| J[Invoke Service]
+    
+    J --> K{Success?}
+    K -->|Yes| L[Return Result]
+    K -->|No| M[Update Circuit]
+    M --> I
 ```
 
 **Service Resolution:**
@@ -187,8 +281,28 @@ Plugin Request → Service Discovery → Capability Matching → Service Invocat
 ## Channel Plugin Integration
 
 ### 1. Channel Registration
-```
-Channel Plugin → Gateway Registration → Message Router Integration → Status Monitoring
+
+```mermaid
+sequenceDiagram
+    participant CP as Channel Plugin
+    participant GW as Gateway
+    participant MR as Message Router
+    participant HM as Health Monitor
+    
+    CP->>GW: Register Channel
+    GW->>GW: Validate Plugin
+    GW->>MR: Add Routes
+    MR-->>GW: Routes Configured
+    
+    GW->>HM: Add Health Check
+    HM-->>GW: Monitoring Started
+    
+    GW-->>CP: Registration Complete
+    
+    loop Health Check
+        HM->>CP: Status Request
+        CP-->>HM: Health Status
+    end
 ```
 
 **Integration Steps:**
@@ -218,8 +332,25 @@ interface ChannelPlugin {
 ## Tool Plugin Integration
 
 ### 1. Tool Registration
-```
-Tool Plugin → Schema Validation → Security Policy Application → Agent Integration
+
+```mermaid
+flowchart TD
+    A[Tool Plugin] --> B[Parse Tool Definitions]
+    B --> C[Validate JSON Schema]
+    
+    C --> D{Schema Valid?}
+    D -->|No| E[Reject Tool]
+    D -->|Yes| F[Security Assessment]
+    
+    F --> G{Requires Sandbox?}
+    G -->|Yes| H[Configure Sandbox]
+    G -->|No| I[Apply Limits]
+    
+    H --> J[Register with Agent]
+    I --> J
+    
+    J --> K[Enable Monitoring]
+    K --> L[Tool Available]
 ```
 
 **Tool Integration:**
@@ -247,8 +378,29 @@ interface ToolPlugin {
 ## Provider Plugin Integration
 
 ### 1. AI Provider Registration
-```
-Provider Plugin → Model Catalog Integration → Authentication Setup → Health Monitoring
+
+```mermaid
+sequenceDiagram
+    participant PP as Provider Plugin
+    participant MC as Model Catalog
+    participant AM as Auth Manager
+    participant HM as Health Monitor
+    participant FM as Failover Manager
+    
+    PP->>MC: Register Models
+    MC->>MC: Validate Model Defs
+    MC-->>PP: Models Registered
+    
+    PP->>AM: Setup Auth
+    AM->>AM: Validate Credentials
+    AM-->>PP: Auth Configured
+    
+    PP->>HM: Start Monitoring
+    HM->>PP: Initial Health Check
+    PP-->>HM: Health Status
+    
+    PP->>FM: Configure Failover
+    FM-->>PP: Failover Chain Set
 ```
 
 **Provider Integration:**
@@ -278,8 +430,29 @@ interface ProviderPlugin {
 ## Plugin Security and Isolation
 
 ### 1. Security Boundaries
-```
-Plugin Code → Security Sandbox → System API → Core Services
+
+```mermaid
+flowchart LR
+    subgraph Plugin["Plugin Space"]
+        Code["Plugin Code"]
+    end
+    
+    subgraph Sandbox["Security Sandbox"]
+        Boundary["Module Boundary"]
+        RateLimit["Rate Limiter"]
+        ResourceMon["Resource Monitor"]
+    end
+    
+    subgraph Core["Core Services"]
+        API["System API"]
+        Services["Protected Services"]
+    end
+    
+    Code --> Boundary
+    Boundary --> RateLimit
+    RateLimit --> ResourceMon
+    ResourceMon --> API
+    API --> Services
 ```
 
 **Security Measures:**
@@ -376,8 +549,29 @@ interface PluginHealthCheck {
 ## Error Handling and Recovery
 
 ### 1. Plugin Failure Recovery
-```
-Plugin Failure → Error Classification → Recovery Strategy → System Notification
+
+```mermaid
+flowchart TD
+    A[Plugin Failure] --> B[Classify Error]
+    
+    B --> C{Transient?}
+    C -->|Yes| D[Auto Restart]
+    D --> E{Restart OK?}
+    E -->|Yes| F[Resume Operation]
+    E -->|No| G[Increment Counter]
+    
+    C -->|No| H{Fallback Available?}
+    
+    G --> I{Max Retries?}
+    I -->|No| D
+    I -->|Yes| H
+    
+    H -->|Yes| J[Switch to Fallback]
+    H -->|No| K[Graceful Degradation]
+    
+    J --> L[Notify System]
+    K --> L
+    F --> L
 ```
 
 **Recovery Strategies:**
@@ -387,8 +581,26 @@ Plugin Failure → Error Classification → Recovery Strategy → System Notific
 - User notification for critical failures
 
 ### 2. System Resilience
-```
-Plugin Isolation → Failure Containment → Service Continuity → Recovery Coordination
+
+```mermaid
+flowchart LR
+    subgraph Isolation["Isolation"]
+        P1["Plugin A"]
+        P2["Plugin B"]
+        P3["Plugin C"]
+    end
+    
+    subgraph Protection["Protection"]
+        CB["Circuit Breakers"]
+        HLB["Health-Based LB"]
+    end
+    
+    subgraph Core["Core System"]
+        SC["Service Continuity"]
+        RC["Recovery Coord"]
+    end
+    
+    Isolation --> Protection --> Core
 ```
 
 **Resilience Features:**

@@ -14,38 +14,69 @@ The Communication Channels component provides unified messaging integration acro
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Channels["Communication Channels"]
+        subgraph Core["Channel Core"]
+            Registry["Registry"]
+            Router["Router"]
+            Allowlists["Allowlists"]
+        end
+        
+        subgraph Builtin["Built-in (7)"]
+            WA["WhatsApp"]
+            TG["Telegram"]
+            DC["Discord"]
+            SL["Slack"]
+            SG["Signal"]
+            IM["iMessage"]
+            GC["Google Chat"]
+        end
+        
+        subgraph Extensions["Extensions (13+)"]
+            MX["Matrix"]
+            MT["MS Teams"]
+            ZL["Zalo"]
+            TW["Twitch"]
+            VC["Voice Call"]
+            NS["Nostr"]
+            BB["BlueBubbles"]
+        end
+    end
+    
+    subgraph Processing["Unified Message Processing"]
+        direction LR
+        Inbound["Inbound<br/>Normalization<br/>Validation<br/>Media Staging"]
+        Process["Processing<br/>Agent Router<br/>Allowlists<br/>Commands"]
+        Outbound["Outbound<br/>Formatting<br/>Limits<br/>Delivery"]
+        
+        Inbound --> Process --> Outbound
+    end
+    
+    Core --> Builtin
+    Core --> Extensions
+    Builtin --> Processing
+    Extensions --> Processing
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Communication Channels                       │
-├─────────────────┬─────────────────┬─────────────────────────────┤
-│  Channel Core   │  Built-in       │  Extension Channels         │
-│                 │  Channels (7)   │  (13+)                     │
-├─────────────────┼─────────────────┼─────────────────────────────┤
-│ • Registry      │ • WhatsApp      │ • Matrix                    │
-│ • Router        │ • Telegram      │ • MS Teams                  │
-│ • Allowlists    │ • Discord       │ • Zalo/ZaloUser            │
-│ • Mentions      │ • Slack         │ • Twitch                    │
-│ • Typing        │ • Signal        │ • Voice Call                │
-│ • Reactions     │ • iMessage      │ • Nostr                     │
-│ • Location      │ • Google Chat   │ • BlueBubbles               │
-│                 │                 │ • Nextcloud Talk            │
-│                 │                 │ • Tlon/Urbit                │
-│                 │                 │ • Mattermost                │
-│                 │                 │ • LINE                      │
-└─────────────────┴─────────────────┴─────────────────────────────┘
-          │                         │                         │
-          └─────────────────────────┼─────────────────────────┘
-                                    │
-┌─────────────────────────────────────────────────────────────────┐
-│              Unified Message Processing                         │
-├─────────────────┬─────────────────┬─────────────────────────────┤
-│   Inbound       │   Processing    │   Outbound                  │
-├─────────────────┼─────────────────┼─────────────────────────────┤
-│ • Normalization │ • Agent Router  │ • Format Adaptation         │
-│ • Validation    │ • Allowlists    │ • Platform Limits           │
-│ • Media Staging │ • Group Policy  │ • Media Processing          │
-│ • Rate Limiting │ • Command Parse │ • Delivery Tracking         │
-└─────────────────┴─────────────────┴─────────────────────────────┘
+
+### Message Flow Overview
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Channel Plugin
+    participant R as Channel Registry
+    participant P as Message Processor
+    participant A as Agent
+    
+    U->>C: Platform Message
+    C->>R: Normalized Message
+    R->>P: Route to Processor
+    P->>P: Validate & Check Allowlist
+    P->>A: Process Request
+    A-->>P: Response
+    P->>C: Format for Platform
+    C->>U: Deliver Message
 ```
 
 ## Core Channel System
@@ -461,6 +492,22 @@ class VoiceCallChannel implements ChannelPlugin {
 
 ### 1. Inbound Message Flow
 
+```mermaid
+flowchart TD
+    A[Raw Platform Message] --> B[Normalize Format]
+    B --> C[Validate Content]
+    C --> D[Process Media]
+    D --> E{Rate Limit Check}
+    
+    E -->|Exceeded| F[Queue/Reject]
+    E -->|OK| G{Allowlist Check}
+    
+    G -->|Denied| H[Drop Message]
+    G -->|Allowed| I[Processed Message]
+    
+    I --> J[Route to Agent]
+```
+
 ```typescript
 interface MessageProcessor {
   process(message: RawMessage): Promise<ProcessedMessage>
@@ -494,6 +541,27 @@ class InboundProcessor implements MessageProcessor {
 ```
 
 ### 2. Outbound Message Flow
+
+```mermaid
+flowchart TD
+    A[Agent Response] --> B[Format for Platform]
+    B --> C{Check Platform Limits}
+    
+    C -->|Exceeds| D[Split/Truncate]
+    D --> E[Process Media]
+    C -->|OK| E
+    
+    E --> F[Send via Channel]
+    F --> G{Delivery Status}
+    
+    G -->|Success| H[Track Delivery]
+    G -->|Failure| I{Retry?}
+    
+    I -->|Yes| F
+    I -->|No| J[Log Failure]
+    
+    H --> K[Complete]
+```
 
 ```typescript
 class OutboundProcessor {

@@ -15,31 +15,67 @@ The Memory & Persistence component provides sophisticated data storage, retrieva
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Memory["Memory & Persistence System"]
+        subgraph Storage["Primary Storage"]
+            Sessions["Session Storage<br/>Conversations<br/>User Context"]
+            MemStore["Memory Store<br/>Knowledge Base<br/>File Content"]
+            VectorDB["Vector Database<br/>Embeddings<br/>Similarity Search"]
+        end
+        
+        subgraph Processing["Processing Layer"]
+            Compact["Compaction<br/>Auto Cleanup<br/>Deduplication"]
+            Index["Indexing<br/>Auto Sync<br/>Watch Folders"]
+            Cache["Caching<br/>Redis/Memory<br/>Query Optimization"]
+        end
+    end
+    
+    subgraph Backends["Storage Backends"]
+        SQLite["SQLite + Vector<br/>Extensions"]
+        LanceDB["LanceDB<br/>Advanced Vectors"]
+        FileSystem["File System<br/>Storage"]
+    end
+    
+    Storage --> Processing
+    Processing --> Backends
+    
+    Agent["Agent Runtime"] --> Memory
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                Memory & Persistence System                      │
-├─────────────────┬─────────────────┬─────────────────────────────┤
-│ Session Storage │   Memory Store  │   Vector Database           │
-├─────────────────┼─────────────────┼─────────────────────────────┤
-│ • Conversations │ • Knowledge Base│ • Embedding Storage         │
-│ • User Context  │ • Learning Data │ • Similarity Search         │
-│ • Tool Results  │ • File Content  │ • Hybrid Retrieval          │
-│ • Metadata      │ • External Data │ • Multi-Model Support       │
-├─────────────────┼─────────────────┼─────────────────────────────┤
-│   Compaction    │   Indexing      │   Caching Layer             │
-├─────────────────┼─────────────────┼─────────────────────────────┤
-│ • Auto Cleanup  │ • Auto Sync     │ • Redis Integration         │
-│ • Deduplication │ • Watch Folders │ • Memory Cache              │
-│ • Compression   │ • Embeddings    │ • Query Optimization        │
-└─────────────────┴─────────────────┴─────────────────────────────┘
-                                │
-                ┌───────────────┼───────────────┐
-                │               │               │
-        ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-        │  SQLite     │ │  LanceDB    │ │ File System │
-        │  + Vector   │ │  Advanced   │ │  Storage    │
-        │  Extensions │ │  Vectors    │ │             │
-        └─────────────┘ └─────────────┘ └─────────────┘
+
+### Memory Search Flow
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant MS as Memory Search
+    participant EP as Embedding Provider
+    participant VS as Vector Store
+    participant TS as Text Search
+    participant C as Cache
+    
+    A->>MS: Search Query
+    MS->>C: Check Cache
+    
+    alt Cache Hit
+        C-->>MS: Cached Results
+    else Cache Miss
+        MS->>EP: Generate Query Embedding
+        EP-->>MS: Query Vector
+        
+        par Hybrid Search
+            MS->>VS: Vector Similarity Search
+            MS->>TS: Full-Text Search
+        end
+        
+        VS-->>MS: Vector Results
+        TS-->>MS: Text Results
+        
+        MS->>MS: Combine & Re-rank
+        MS->>C: Store in Cache
+    end
+    
+    MS-->>A: Search Results
 ```
 
 ## Core Components
@@ -282,6 +318,34 @@ class ContentIndexer {
 
 Intelligent conversation history compression to manage context window limits.
 
+```mermaid
+flowchart TD
+    A[Session Data] --> B{Size > Threshold?}
+    
+    B -->|No| C[No Compaction Needed]
+    B -->|Yes| D[Analyze Messages]
+    
+    D --> E[Calculate Importance Scores]
+    D --> F[Identify Recent Messages]
+    D --> G[Find Tool Interactions]
+    
+    E --> H{Score >= Threshold?}
+    H -->|Yes| I[Preserve Message]
+    H -->|No| J[Mark for Summary]
+    
+    F --> K[Preserve Recent N]
+    G --> L[Preserve Tool Context]
+    
+    I --> M[Generate Summaries<br/>for marked messages]
+    J --> M
+    K --> M
+    L --> M
+    
+    M --> N[Create Compacted Session]
+    N --> O[Validate Token Count]
+    O --> P[Update Storage]
+```
+
 ```typescript
 interface CompactionConfig {
   enabled: boolean;
@@ -392,6 +456,35 @@ schema = pa.schema([
 ## Search & Retrieval
 
 ### 1. Hybrid Search Algorithm
+
+```mermaid
+flowchart TD
+    A[Search Query] --> B[Generate Embedding]
+    B --> C[Parallel Search]
+    
+    subgraph Parallel["Parallel Execution"]
+        D[Vector Store<br/>Similarity Search]
+        E[FTS Index<br/>Text Search]
+    end
+    
+    C --> D
+    C --> E
+    
+    D --> F[Vector Results<br/>with scores]
+    E --> G[Text Results<br/>with scores]
+    
+    F --> H[Combine Results]
+    G --> H
+    
+    H --> I[Apply Weights<br/>vector: 0.7, text: 0.3]
+    I --> J[Re-rank by Score]
+    J --> K{Score >= minScore?}
+    
+    K -->|Yes| L[Include Result]
+    K -->|No| M[Filter Out]
+    
+    L --> N[Return Top N Results]
+```
 
 ```typescript
 interface HybridSearchOptions {

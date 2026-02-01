@@ -31,8 +31,14 @@ stateDiagram-v2
 ## Session Creation Flow
 
 ### 1. Initial Message Processing
-```
-User Message → Channel Validation → User Identification → Agent Assignment → Session Creation
+
+```mermaid
+flowchart LR
+    A[User Message] --> B[Channel<br/>Validation]
+    B --> C[User<br/>Identification]
+    C --> D[Agent<br/>Assignment]
+    D --> E[Session<br/>Creation]
+    E --> F[Storage]
 ```
 
 **Creation Steps:**
@@ -62,8 +68,28 @@ interface NewSession {
 ## Active Session Management
 
 ### Message Processing Within Session
-```
-Inbound Message → Session Loading → Context Assembly → AI Processing → Response Generation → Session Update
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant SM as Session Manager
+    participant MS as Memory Search
+    participant AI as AI Provider
+    participant DB as Database
+    
+    U->>SM: Inbound Message
+    SM->>DB: Load Session
+    DB-->>SM: Session Data
+    
+    SM->>MS: Query Context
+    MS-->>SM: Memory Results
+    
+    SM->>SM: Assemble Context
+    SM->>AI: Process Request
+    AI-->>SM: Response
+    
+    SM->>DB: Update Session
+    SM->>U: Deliver Response
 ```
 
 **Context Assembly:**
@@ -73,8 +99,18 @@ Inbound Message → Session Loading → Context Assembly → AI Processing → R
 4. Prepare comprehensive prompt context
 
 ### Memory Integration
-```
-Session History + External Memory + User Context → Contextualized Prompt
+
+```mermaid
+flowchart LR
+    subgraph Sources["Memory Sources"]
+        H[Session History]
+        V[Vector Search<br/>Results]
+        P[User Preferences]
+        C[Channel Context]
+    end
+    
+    Sources --> Merge[Context<br/>Merger]
+    Merge --> Prompt[Contextualized<br/>Prompt]
 ```
 
 **Memory Sources:**
@@ -154,8 +190,16 @@ interface MessageImportance {
 ## Memory Persistence
 
 ### Session Storage Strategy
-```
-Active Messages → Incremental Storage → Batch Optimization → Persistent Storage
+
+```mermaid
+flowchart TD
+    A[Active Messages] --> B[Memory Cache<br/>Hot Data]
+    B --> C[Incremental<br/>Storage]
+    C --> D[Local Database<br/>SQLite]
+    D --> E[Batch<br/>Optimization]
+    E --> F[Archive Storage<br/>Long-term]
+    
+    D --> G[Memory Index<br/>Vector Embeddings]
 ```
 
 **Storage Layers:**
@@ -185,8 +229,24 @@ interface RetentionPolicy {
 ## Session Recovery and Error Handling
 
 ### Corruption Recovery
-```
-Session Corruption Detected → Backup Validation → Recovery Attempt → Manual Intervention
+
+```mermaid
+flowchart TD
+    A[Corruption Detected] --> B{Backup Available?}
+    
+    B -->|Yes| C[Validate Backup]
+    C --> D{Valid?}
+    D -->|Yes| E[Restore from Backup]
+    D -->|No| F[Try Reconstruction]
+    
+    B -->|No| F
+    F --> G{Logs Available?}
+    G -->|Yes| H[Partial Recovery]
+    G -->|No| I[Create New Session]
+    
+    E --> J[Notify User]
+    H --> J
+    I --> J
 ```
 
 **Recovery Strategies:**
@@ -196,8 +256,15 @@ Session Corruption Detected → Backup Validation → Recovery Attempt → Manua
 - Graceful degradation with new session creation
 
 ### Failover Scenarios
-```
-Primary Storage Failure → Backup Storage → Read-Only Mode → Full Recovery
+
+```mermaid
+flowchart LR
+    A[Primary Storage<br/>Failure] --> B[Switch to<br/>Backup]
+    B --> C[Read-Only<br/>Mode]
+    C --> D[Queue Writes]
+    D --> E[Primary<br/>Recovery]
+    E --> F[Replay<br/>Queue]
+    F --> G[Full<br/>Recovery]
 ```
 
 ## Performance Optimization
