@@ -9,9 +9,9 @@ export default defineConfig({
 		starlight({
 			plugins: [starlightClientMermaid()],
 			title: 'OpenClaw Research',
-			defaultLocale: 'en',
+			defaultLocale: 'root',
 			locales: {
-				en: { label: 'English', lang: 'en' },
+				root: { label: 'English', lang: 'en' },
 				'zh-cn': { label: '简体中文', lang: 'zh-CN' },
 				ja: { label: '日本語', lang: 'ja' },
 				fr: { label: 'Français', lang: 'fr' },
