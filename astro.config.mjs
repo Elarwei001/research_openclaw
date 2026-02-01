@@ -14,8 +14,16 @@ export default defineConfig({
 				{
 					label: 'Overview',
 					items: [
-						{ label: 'Introduction', slug: 'index' },
+						{ label: 'Architecture Landscape', slug: 'index' },
 					],
+				},
+				{
+					label: 'Components',
+					autogenerate: { directory: 'components' },
+				},
+				{
+					label: 'Data Flows',
+					autogenerate: { directory: 'data-flows' },
 				},
 				{
 					label: 'Memory System',
