@@ -1,11 +1,13 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
 
 // https://astro.build/config
 export default defineConfig({
 	integrations: [
 		starlight({
+			plugins: [starlightClientMermaid()],
 			title: 'OpenClaw Research',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Elarwei001/research_openclaw' }],
 			sidebar: [

@@ -1,0 +1,295 @@
+```mermaid
+graph TB
+    %% External Interfaces
+    subgraph "Client Interfaces"
+        WEB[Web Portal<br/>Control UI]
+        MOBILE[Mobile Apps<br/>iOS/Android]
+        DESKTOP[Desktop Apps<br/>macOS/Windows/Linux]
+        CLI[CLI Interface<br/>Terminal]
+    end
+
+    %% Communication Channels
+    subgraph "Communication Channels"
+        WA[WhatsApp Web]
+        TG[Telegram Bot]
+        DC[Discord Bot]
+        SL[Slack Bot]
+        SIG[Signal CLI]
+        IM[iMessage]
+        GC[Google Chat]
+        EXT[Extension Channels<br/>Matrix, Teams, etc.]
+    end
+
+    %% Core Gateway
+    subgraph "Gateway Layer"
+        GW[Gateway Server<br/>HTTP/WebSocket API]
+        AUTH[Authentication<br/>OAuth & API Keys]
+        ROUTER[Message Router<br/>Allowlists & Routing]
+        LB[Load Balancer<br/>Request Distribution]
+        DISC[Node Discovery<br/>Service Mesh]
+    end
+
+    %% Agent Runtime
+    subgraph "Agent Runtime System"
+        AGENT[AI Agent Engine<br/>Model Integration]
+        SESSION[Session Manager<br/>Conversation State]
+        TOOLS[Tool Engine<br/>Sandboxed Execution]
+        PROF[Auth Profiles<br/>Multi-Provider Auth]
+        MEM[Memory System<br/>Context Retrieval]
+    end
+
+    %% AI Providers
+    subgraph "AI Model Providers"
+        OPENAI[OpenAI<br/>GPT Models]
+        ANTH[Anthropic<br/>Claude Models]
+        GOOGLE[Google<br/>Gemini Models]
+        OTHERS[Others<br/>15+ Providers]
+    end
+
+    %% Plugin System
+    subgraph "Plugin Ecosystem"
+        CORE[Core Plugins<br/>Essential Features]
+        COMM[Communication<br/>8 Plugins]
+        INTEG[Integration<br/>7 Plugins]
+        TOOLP[Tool Plugins<br/>6 Plugins]
+        UTIL[Utility<br/>4 Plugins]
+    end
+
+    %% Browser Automation
+    subgraph "Browser Automation"
+        PW[Playwright<br/>Cross-browser]
+        CHROME[Chrome Profiles<br/>Isolated Contexts]
+        BRIDGE[Extension Bridge<br/>Web Integration]
+        SCREEN[Screenshots<br/>Visual Debug]
+    end
+
+    %% Storage Layer
+    subgraph "Storage & Persistence"
+        SQLMAIN[(Main Database<br/>SQLite)]
+        VECTOR[(Vector Store<br/>SQLite + Extensions)]
+        LANCE[(LanceDB<br/>Advanced Vectors)]
+        REDIS[(Redis Cache<br/>Performance)]
+        FILES[(File Storage<br/>Media & Logs)]
+        CONFIG[(Configuration<br/>YAML/JSON)]
+    end
+
+    %% Security Layer
+    subgraph "Security & Sandboxing"
+        DOCKER[Docker Containers<br/>Execution Isolation]
+        SANDBOX[Sandbox Manager<br/>Resource Limits]
+        PERMS[Permission System<br/>Fine-grained Access]
+        AUDIT[Audit Logging<br/>Security Events]
+    end
+
+    %% Data Flow Connections
+    WEB --> GW
+    MOBILE --> GW
+    DESKTOP --> GW
+    CLI --> GW
+
+    WA --> ROUTER
+    TG --> ROUTER
+    DC --> ROUTER
+    SL --> ROUTER
+    SIG --> ROUTER
+    IM --> ROUTER
+    GC --> ROUTER
+    EXT --> ROUTER
+
+    GW --> AUTH
+    GW --> ROUTER
+    GW --> LB
+    GW --> DISC
+
+    ROUTER --> AGENT
+    AUTH --> PROF
+    LB --> AGENT
+
+    AGENT --> SESSION
+    AGENT --> TOOLS
+    AGENT --> MEM
+    AGENT --> PROF
+
+    PROF --> OPENAI
+    PROF --> ANTH
+    PROF --> GOOGLE
+    PROF --> OTHERS
+
+    AGENT --> CORE
+    TOOLS --> COMM
+    TOOLS --> INTEG
+    TOOLS --> TOOLP
+    TOOLS --> UTIL
+
+    TOOLS --> PW
+    TOOLS --> CHROME
+    TOOLS --> BRIDGE
+    TOOLS --> SCREEN
+
+    TOOLS --> DOCKER
+    TOOLS --> SANDBOX
+    SESSION --> PERMS
+    GW --> AUDIT
+
+    SESSION --> SQLMAIN
+    MEM --> VECTOR
+    MEM --> LANCE
+    AGENT --> REDIS
+    TOOLS --> FILES
+    GW --> CONFIG
+
+    %% Styling
+    classDef interface fill:#e1f5fe
+    classDef channel fill:#f3e5f5
+    classDef core fill:#e8f5e8
+    classDef ai fill:#fff3e0
+    classDef plugin fill:#fce4ec
+    classDef browser fill:#f1f8e9
+    classDef storage fill:#e0f2f1
+    classDef security fill:#ffebee
+
+    class WEB,MOBILE,DESKTOP,CLI interface
+    class WA,TG,DC,SL,SIG,IM,GC,EXT channel
+    class GW,AUTH,ROUTER,LB,DISC,AGENT,SESSION,TOOLS,PROF,MEM core
+    class OPENAI,ANTH,GOOGLE,OTHERS ai
+    class CORE,COMM,INTEG,TOOLP,UTIL plugin
+    class PW,CHROME,BRIDGE,SCREEN browser
+    class SQLMAIN,VECTOR,LANCE,REDIS,FILES,CONFIG storage
+    class DOCKER,SANDBOX,PERMS,AUDIT security
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Channel as Communication Channel
+    participant Gateway as Gateway Server
+    participant Agent as AI Agent Runtime
+    participant AI as AI Provider
+    participant Tools as Tool Engine
+    participant Storage as Storage Layer
+
+    User->>Channel: Send Message
+    Channel->>Gateway: Forward Message
+    Gateway->>Gateway: Authenticate & Route
+    Gateway->>Agent: Process Request
+    
+    Agent->>Storage: Load Session Context
+    Storage-->>Agent: Session Data
+    
+    Agent->>Storage: Query Memory
+    Storage-->>Agent: Relevant Context
+    
+    Agent->>AI: Generate Response
+    AI-->>Agent: AI Response
+    
+    alt Tool Execution Required
+        Agent->>Tools: Execute Tool
+        Tools->>Tools: Sandboxed Execution
+        Tools-->>Agent: Tool Results
+        Agent->>AI: Continue with Results
+        AI-->>Agent: Final Response
+    end
+    
+    Agent->>Storage: Update Session
+    Agent->>Gateway: Send Response
+    Gateway->>Channel: Forward Response
+    Channel->>User: Deliver Message
+```
+
+```mermaid
+flowchart LR
+    subgraph "Plugin Lifecycle"
+        START[Plugin Start]
+        LOAD[Load Plugin]
+        REG[Register Services]
+        INIT[Initialize]
+        RUN[Runtime Operations]
+        RELOAD[Hot Reload]
+        STOP[Graceful Stop]
+        END[Plugin End]
+        
+        START --> LOAD
+        LOAD --> REG
+        REG --> INIT
+        INIT --> RUN
+        RUN --> RELOAD
+        RELOAD --> RUN
+        RUN --> STOP
+        STOP --> END
+    end
+
+    subgraph "Memory Flow"
+        INPUT[User Input]
+        EMBED[Generate Embeddings]
+        SEARCH[Vector Search]
+        RANK[Relevance Ranking]
+        CONTEXT[Contextual Integration]
+        OUTPUT[Enhanced Response]
+        
+        INPUT --> EMBED
+        EMBED --> SEARCH
+        SEARCH --> RANK
+        RANK --> CONTEXT
+        CONTEXT --> OUTPUT
+    end
+
+    subgraph "Security Layers"
+        NET[Network Security<br/>TLS/HTTPS]
+        AUTH_L[Authentication<br/>OAuth/API Keys]
+        AUTHZ[Authorization<br/>RBAC/Permissions]
+        EXEC[Execution Security<br/>Docker/Sandbox]
+        
+        NET --> AUTH_L
+        AUTH_L --> AUTHZ
+        AUTHZ --> EXEC
+    end
+```
+
+```mermaid
+graph TD
+    subgraph "Deployment Options"
+        DEV[Development<br/>Local Machine]
+        PERSONAL[Personal Server<br/>VPS/Home Lab]
+        PROD[Production<br/>Kubernetes Cluster]
+        
+        subgraph "Development Stack"
+            DEV_NODE[Node.js Runtime]
+            DEV_DB[SQLite Database]
+            DEV_GW[Development Gateway]
+            DEV_PLUGINS[Hot-reload Plugins]
+        end
+        
+        subgraph "Personal Server Stack"
+            PERS_DOCKER[Docker Containers]
+            PERS_STORAGE[Persistent Storage]
+            PERS_PROXY[Reverse Proxy]
+            PERS_MON[Basic Monitoring]
+        end
+        
+        subgraph "Production Stack"
+            PROD_LB[Load Balancer]
+            PROD_NODES[Gateway Nodes x3+]
+            PROD_AGENTS[Agent Workers x5+]
+            PROD_DB[Database Cluster]
+            PROD_CACHE[Redis Cluster]
+            PROD_MON[Full Monitoring Stack]
+        end
+        
+        DEV --> DEV_NODE
+        DEV --> DEV_DB
+        DEV --> DEV_GW
+        DEV --> DEV_PLUGINS
+        
+        PERSONAL --> PERS_DOCKER
+        PERSONAL --> PERS_STORAGE
+        PERSONAL --> PERS_PROXY
+        PERSONAL --> PERS_MON
+        
+        PROD --> PROD_LB
+        PROD --> PROD_NODES
+        PROD --> PROD_AGENTS
+        PROD --> PROD_DB
+        PROD --> PROD_CACHE
+        PROD --> PROD_MON
+    end
+```
