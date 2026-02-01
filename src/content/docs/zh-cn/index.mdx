@@ -1,14 +1,14 @@
 ---
-title: OpenClaw Architecture Landscape
-description: Deep dives into OpenClaw's architecture, memory systems, and security mechanisms.
+title: OpenClaw 架构全景
+description: 深入探索 OpenClaw 的架构、内存系统和安全机制。
 template: splash
 hero:
-  tagline: Comprehensive analysis of OpenClaw's AI agent orchestration platform - architecture, components, and data flows.
+  tagline: OpenClaw AI 代理编排平台的全面分析 - 架构、组件与数据流。
   actions:
-    - text: Explore Components
-      link: /components/gateway-server/
+    - text: 探索组件
+      link: /zh-cn/components/gateway-server/
       icon: right-arrow
-    - text: View on GitHub
+    - text: 在 GitHub 上查看
       link: https://github.com/Elarwei001/research_openclaw
       icon: external
       variant: minimal
@@ -31,94 +31,94 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 `}
 </style>
 
-## Executive Summary
+## 执行摘要
 
-OpenClaw is a sophisticated AI agent orchestration platform designed for seamless integration with multiple messaging platforms and AI model providers. It provides a comprehensive framework for building, deploying, and managing AI assistants across diverse communication channels.
+OpenClaw 是一个成熟的 AI 代理编排平台，旨在与多种消息平台和 AI 模型提供商无缝集成。它提供了一个全面的框架，用于在多样化的通信渠道上构建、部署和管理 AI 助手。
 
-## High-Level Architecture
+## 高层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              OpenClaw Platform                              │
+│                              OpenClaw 平台                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐            │
-│  │  Communication  │   │   AI Agents &   │   │    Security &   │            │
-│  │    Channels     │◄──┤     Runtime     │◄──┤   Auth System   │            │
+│  │     通信渠道     │   │   AI 代理 &     │   │    安全 &       │            │
+│  │                 │◄──┤     运行时      │◄──┤    认证系统     │            │
 │  │                 │   │                 │   │                 │            │
-│  │ • WhatsApp      │   │ • Model Mgmt    │   │ • OAuth Flows   │            │
-│  │ • Telegram      │   │ • Session State │   │ • API Key Mgmt  │            │
-│  │ • Discord       │   │ • Tool Execution│   │ • Profile Auth  │            │
-│  │ • Slack (+17)   │   │ • Memory System │   │ • Sandboxing    │            │
+│  │ • WhatsApp      │   │ • 模型管理       │   │ • OAuth 流程    │            │
+│  │ • Telegram      │   │ • 会话状态       │   │ • API 密钥管理   │            │
+│  │ • Discord       │   │ • 工具执行       │   │ • 配置文件认证   │            │
+│  │ • Slack (+17)   │   │ • 内存系统       │   │ • 沙箱隔离      │            │
 │  └─────────────────┘   └─────────────────┘   └─────────────────┘            │
 │           │                       │                       │                 │
 │           └───────────────────────┼───────────────────────┘                 │
 │                                   │                                         │
 │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐            │
-│  │  Gateway &      │◄──┤   Plugin        │◄──┤   Browser       │            │
-│  │  Server Core    │   │  Ecosystem      │   │  Automation     │            │
+│  │  网关 &         │◄──┤   插件          │◄──┤   浏览器        │            │
+│  │  服务器核心     │   │   生态系统      │   │   自动化        │            │
 │  │                 │   │                 │   │                 │            │
-│  │ • HTTP/WS API   │   │ • 25+ Extensions│   │ • Playwright    │            │
-│  │ • Load Balancing│   │ • Hot Reload    │   │ • Chrome Mgmt   │            │
-│  │ • Node Discovery│   │ • Skills System │   │ • Web Tools     │            │
-│  │ • Event Routing │   │ • SDK Platform  │   │ • Extension Brdg│            │
+│  │ • HTTP/WS API   │   │ • 25+ 扩展      │   │ • Playwright    │            │
+│  │ • 负载均衡      │   │ • 热重载        │   │ • Chrome 管理   │            │
+│  │ • 节点发现      │   │ • 技能系统      │   │ • Web 工具      │            │
+│  │ • 事件路由      │   │ • SDK 平台      │   │ • 扩展桥接      │            │
 │  └─────────────────┘   └─────────────────┘   └─────────────────┘            │
 │                                   │                                         │
 ├───────────────────────────────────┼─────────────────────────────────────────┤
-│                     Memory & Persistence Layer                              │
+│                        内存 & 持久化层                                       │
 │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐            │
-│  │    Session      │   │   Vector DB &   │   │  Configuration  │            │
-│  │    Storage      │   │   Embeddings    │   │   Management    │            │
+│  │     会话        │   │   向量数据库 &   │   │     配置        │            │
+│  │     存储        │   │   嵌入向量      │   │     管理        │            │
 │  │                 │   │                 │   │                 │            │
-│  │ • Transcripts   │   │ • SQLite + Vec  │   │ • YAML/JSON     │            │
-│  │ • State Mgmt    │   │ • LanceDB       │   │ • Env Variables │            │
-│  │ • Compaction    │   │ • Hybrid Search │   │ • Profiles      │            │
+│  │ • 对话记录      │   │ • SQLite + Vec  │   │ • YAML/JSON     │            │
+│  │ • 状态管理      │   │ • LanceDB       │   │ • 环境变量      │            │
+│  │ • 压缩归档      │   │ • 混合搜索      │   │ • 配置文件      │            │
 │  └─────────────────┘   └─────────────────┘   └─────────────────┘            │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Components
+## 核心组件
 
 <div class="card-grid-3col">
-	<LinkCard title="Gateway Server" href="/components/gateway-server/" description="The central nervous system - HTTP/WebSocket API, device authentication, node discovery, and event routing." />
-	<LinkCard title="🔥 Agent Runtime" href="/components/agent-runtime/" description="105 updates last week · AI agent orchestration with multi-provider model support, session management, and tool execution." />
-	<LinkCard title="🔥 Communication Channels" href="/components/communication-channels/" description="114 updates last week · Multi-platform messaging - WhatsApp, Telegram, Discord, Slack, Signal, and 15+ more channels." />
-	<LinkCard title="Memory & Persistence" href="/components/memory-persistence/" description="Session storage, vector databases, embeddings, and intelligent memory retrieval." />
-	<LinkCard title="Security & Auth" href="/components/security-auth/" description="OAuth integration, API key management, sandboxing, and access control." />
-	<LinkCard title="🔥 Plugin Ecosystem" href="/components/plugin-ecosystem/" description="54 updates last week · 25+ extensions with hot-reload support, skills framework, and SDK platform." />
-	<LinkCard title="Browser Automation" href="/components/browser-automation/" description="Playwright integration, Chrome management, and web automation tools." />
+	<LinkCard title="网关服务器" href="/zh-cn/components/gateway-server/" description="中枢神经系统 - HTTP/WebSocket API、设备认证、节点发现和事件路由。" />
+	<LinkCard title="🔥 代理运行时" href="/zh-cn/components/agent-runtime/" description="上周更新 105 次 · AI 代理编排，支持多提供商模型、会话管理和工具执行。" />
+	<LinkCard title="🔥 通信渠道" href="/zh-cn/components/communication-channels/" description="上周更新 114 次 · 多平台消息支持 - WhatsApp、Telegram、Discord、Slack、Signal 等 15+ 渠道。" />
+	<LinkCard title="内存与持久化" href="/zh-cn/components/memory-persistence/" description="会话存储、向量数据库、嵌入向量和智能内存检索。" />
+	<LinkCard title="安全与认证" href="/zh-cn/components/security-auth/" description="OAuth 集成、API 密钥管理、沙箱隔离和访问控制。" />
+	<LinkCard title="🔥 插件生态系统" href="/zh-cn/components/plugin-ecosystem/" description="上周更新 54 次 · 25+ 扩展，支持热重载、技能框架和 SDK 平台。" />
+	<LinkCard title="浏览器自动化" href="/zh-cn/components/browser-automation/" description="Playwright 集成、Chrome 管理和 Web 自动化工具。" />
 </div>
 
-## Data Flows
+## 数据流
 
 <div class="card-grid-3col">
-	<LinkCard title="Message Routing" href="/data-flows/message-routing/" description="How messages flow from external platforms through the gateway to agents and back." />
-	<LinkCard title="Session Lifecycle" href="/data-flows/session-lifecycle/" description="Session creation, state management, compaction, and cleanup processes." />
-	<LinkCard title="Plugin Integration" href="/data-flows/plugin-integration/" description="Plugin loading, hot-reload mechanisms, and runtime integration." />
+	<LinkCard title="消息路由" href="/zh-cn/data-flows/message-routing/" description="消息如何从外部平台通过网关流向代理并返回。" />
+	<LinkCard title="会话生命周期" href="/zh-cn/data-flows/session-lifecycle/" description="会话创建、状态管理、压缩归档和清理流程。" />
+	<LinkCard title="插件集成" href="/zh-cn/data-flows/plugin-integration/" description="插件加载、热重载机制和运行时集成。" />
 </div>
 
-## Deep Dives
+## 深度解析
 
 <div class="card-grid-3col">
-	<LinkCard title="Memory Architecture" href="/architecture/memory/openclaw-memory-system-architecture/" description="Comprehensive analysis of short-term/long-term memory mechanisms and data flows." />
-	<LinkCard title="Memory Indexing" href="/architecture/memory/memory-indexing-mechanisms/" description="When and how workspace files get indexed into SQLite for semantic search." />
-	<LinkCard title="Pairing Security" href="/architecture/security/pairing-mechanism/" description="Channel pairing mechanism, DM policy enforcement, and owner approval workflows." />
+	<LinkCard title="内存架构" href="/zh-cn/architecture/memory/openclaw-memory-system-architecture/" description="短期/长期内存机制和数据流的全面分析。" />
+	<LinkCard title="内存索引" href="/zh-cn/architecture/memory/memory-indexing-mechanisms/" description="工作区文件何时以及如何被索引到 SQLite 中进行语义搜索。" />
+	<LinkCard title="配对安全" href="/zh-cn/architecture/security/pairing-mechanism/" description="渠道配对机制、私信策略执行和所有者审批工作流。" />
 </div>
 
-## Key Technical Innovations
+## 关键技术创新
 
-- **Hot-Reloadable Plugin Architecture** - Runtime extension loading without service interruption
-- **Multi-Provider AI Model Support** - 15+ AI providers with automatic failover
-- **Hybrid Memory System** - Traditional databases + vector search for context-aware retrieval
-- **Channel-Agnostic Messaging** - Unified handling across 20+ communication platforms
-- **Sandboxed Tool Execution** - Docker-based isolation for safe code execution
+- **热重载插件架构** - 无需服务中断的运行时扩展加载
+- **多提供商 AI 模型支持** - 15+ AI 提供商，支持自动故障转移
+- **混合内存系统** - 传统数据库 + 向量搜索，实现上下文感知检索
+- **渠道无关消息处理** - 跨 20+ 通信平台的统一处理
+- **沙箱化工具执行** - 基于 Docker 的隔离，确保代码安全执行
 
-## Performance Characteristics
+## 性能特性
 
-| Metric | Capability |
+| 指标 | 能力 |
 |--------|------------|
-| Concurrent Users | 1000+ simultaneous conversations |
-| Message Throughput | 10,000+ messages per minute |
-| Response Latency | Sub-second for most operations |
-| Availability | 99.9% uptime with clustering |
+| 并发用户 | 1000+ 同时进行的对话 |
+| 消息吞吐量 | 每分钟 10,000+ 消息 |
+| 响应延迟 | 大多数操作低于一秒 |
+| 可用性 | 集群模式下 99.9% 正常运行时间 |
