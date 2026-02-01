@@ -1,4 +1,7 @@
-# OpenClaw Pairing Mechanism
+---
+title: "OpenClaw Pairing Mechanism"
+---
+
 
 ## Introduction
 

@@ -1,43 +1,40 @@
 # OpenClaw Research
 
-This repository contains research documentation and analysis of OpenClaw's architecture and implementation.
+Research documentation and analysis of OpenClaw's architecture and implementation.
+
+🌐 **Live Site**: [Coming soon on Vercel]
 
 ## Contents
 
-### Architecture Analysis
+### Memory System
+- [Memory System Architecture](src/content/docs/architecture/memory/openclaw-memory-system-architecture.md) - Comprehensive analysis of OpenClaw's memory system design
+- [Memory Indexing Mechanisms](src/content/docs/architecture/memory/memory-indexing-mechanisms.md) - How workspace files get indexed into SQLite
 
-#### Memory System
-- [Memory System Architecture](architecture/memory/openclaw-memory-system-architecture.md) - Comprehensive analysis of OpenClaw's memory system design, including short-term/long-term memory mechanisms, data flows, and technical implementation details
-- [Memory Indexing Mechanisms](architecture/memory/memory-indexing-mechanisms.md) - Deep dive into when and how workspace files get indexed into SQLite for semantic search
+### Security
+- [Pairing Mechanism](src/content/docs/architecture/security/pairing-mechanism.md) - DM policy enforcement and owner approval workflows
 
-#### Security
-- [Pairing Mechanism](architecture/security/pairing-mechanism.md) - OpenClaw's pairing security system for messaging channels, including DM policy enforcement and owner approval workflows
+## Development
 
-## Overview
+This site is built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
 
-OpenClaw is an innovative AI agent framework that bridges the gap between ephemeral chat interfaces and persistent AI assistance. This research repository documents the technical architecture and design patterns used in OpenClaw.
+```bash
+# Install dependencies
+pnpm install
 
-## Repository Structure
+# Start dev server
+pnpm dev
 
+# Build for production
+pnpm build
 ```
-research_openclaw/
-├── README.md                                 # This file
-└── architecture/                            # Architecture documentation
-    ├── memory/                             # Memory system docs
-    │   ├── openclaw-memory-system-architecture.md
-    │   └── memory-indexing-mechanisms.md
-    └── security/                           # Security docs
-        └── pairing-mechanism.md
-```
+
+## Deployment
+
+This site auto-deploys to Vercel on every push to `main`.
 
 ## Contributing
 
-This is a research repository for documenting and understanding OpenClaw's architecture. Contributions should focus on:
-
-- Technical architecture analysis
-- Design pattern documentation  
-- Implementation deep-dives
-- System interaction diagrams
+Contributions welcome! Add new documentation as markdown files in `src/content/docs/`.
 
 ## Related Links
 

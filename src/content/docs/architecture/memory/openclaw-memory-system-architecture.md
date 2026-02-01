@@ -1,4 +1,7 @@
-# OpenClaw Memory System Architecture
+---
+title: "OpenClaw Memory System Architecture"
+---
+
 
 ## Introduction
 

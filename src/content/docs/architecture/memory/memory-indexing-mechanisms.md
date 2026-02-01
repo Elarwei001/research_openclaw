@@ -1,4 +1,7 @@
-# OpenClaw Memory Indexing: When and How Files Get Into SQLite
+---
+title: "OpenClaw Memory Indexing: When and How Files Get Into SQLite"
+---
+
 
 ## Overview
 

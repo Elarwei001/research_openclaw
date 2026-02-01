@@ -1,0 +1,34 @@
+---
+title: OpenClaw Research
+description: Research documentation and analysis of OpenClaw's architecture and implementation.
+template: splash
+hero:
+  tagline: Deep dives into OpenClaw's architecture, memory systems, and security mechanisms.
+  actions:
+    - text: Memory System
+      link: /architecture/memory/openclaw-memory-system-architecture/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/Elarwei001/research_openclaw
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Explore
+
+<CardGrid stagger>
+	<Card title="Memory Architecture" icon="document">
+		Comprehensive analysis of OpenClaw's memory system design, including short-term/long-term memory mechanisms and data flows.
+	</Card>
+	<Card title="Memory Indexing" icon="magnifier">
+		Deep dive into when and how workspace files get indexed into SQLite for semantic search.
+	</Card>
+	<Card title="Pairing Security" icon="approve-check">
+		OpenClaw's pairing mechanism for messaging channels, DM policy enforcement and owner approval workflows.
+	</Card>
+	<Card title="More Coming Soon" icon="add-document">
+		This research repository is actively maintained with new documentation being added regularly.
+	</Card>
+</CardGrid>
