@@ -234,6 +234,38 @@ Concurrent scenarios:
 
 Solution: `proper-lockfile` library serializes all writes.
 
+**Why a single file causes conflicts (even for different sessions):**
+
+```
+sessions.json
+┌──────────────────────────────────────────────────┐
+│ {                                                 │
+│   "agent:main:telegram:group:-100123": {          │  ← Telegram wants to update
+│     "updatedAt": 1234567890,                      │
+│     "inputTokens": 1000                           │
+│   },                                              │
+│   "agent:main:discord:channel:456": {             │  ← Discord wants to update
+│     "updatedAt": 1234567891,                      │
+│     "inputTokens": 2000                           │
+│   }                                               │
+│ }                                                 │
+└──────────────────────────────────────────────────┘
+```
+
+Even though they modify **different keys**, the write operation replaces the **entire file**, so the later write overwrites the earlier one's changes.
+
+**Alternative Architecture: Per-Session Files**
+
+Splitting each session into its own file would eliminate cross-session write conflicts:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Single file** (current) | Fast queries (list all sessions), simple | Requires file locking |
+| **Per-session files** | No cross-session conflicts | Directory traversal for listing, more file handles |
+| **SQLite/Database** | Row-level writes, ACID transactions | More complex setup |
+
+> **Note:** This is a design trade-off. The current single-file approach with proper locking works correctly, but a per-session file architecture would be more naturally concurrent-safe.
+
 ```typescript
 // Core data structure
 type SessionEntry = {
@@ -342,7 +374,17 @@ resolveAgentIdFromSessionKey("agent:research:cron:daily")
 
 ### 4. Transcript Manager (`src/config/sessions/transcript.ts`)
 
-Manages reading and writing of conversation history stored in JSONL format.
+Manages reading and writing of conversation history stored in JSONL format. The transcript file is the complete record of a session's conversation.
+
+**Storage Location:**
+
+```
+~/.openclaw/agents/{agentId}/sessions/{sessionId}.jsonl
+```
+
+Example: `~/.openclaw/agents/main/sessions/104bf722-75e1-449a-8194-ddabc98a7908.jsonl`
+
+The `sessionFile` field in `SessionEntry` points to this transcript file.
 
 ```mermaid
 flowchart LR
@@ -365,19 +407,73 @@ flowchart LR
     JSONL --> Parse
 ```
 
-**JSONL Format:**
+**Complete JSONL Structure:**
 
 ```jsonl
-{"message":{"role":"user","content":"Hello"},"timestamp":1707800000000}
-{"message":{"role":"assistant","content":"Hi!"},"timestamp":1707800001000}
-{"type":"compaction","id":"abc-123","timestamp":"2024-02-13T10:00:00Z"}
-{"message":{"role":"user","content":"What's next?"},"timestamp":1707800100000}
+// Session header (first line)
+{"type":"session","version":3,"id":"104bf722...","timestamp":"2026-01-31T14:58:20Z","cwd":"/Users/user/workspace"}
+
+// Model/config changes
+{"type":"model_change","provider":"anthropic","modelId":"claude-opus-4-5","timestamp":"..."}
+{"type":"thinking_level_change","thinkingLevel":"low","timestamp":"..."}
+
+// Custom events (cache tracking, etc.)
+{"type":"custom","customType":"openclaw.cache-ttl","data":{...},"timestamp":"..."}
+{"type":"custom","customType":"model-snapshot","data":{...},"timestamp":"..."}
+
+// User message
+{"type":"user_message","content":[{"type":"text","text":"Hello"}],"timestamp":...}
+
+// Assistant response with tool use
+{"type":"assistant_message","content":[...],"usage":{"input":100,"output":50},"timestamp":...}
+{"type":"tool_use","name":"exec","input":{"command":"ls"},"timestamp":...}
+{"type":"tool_result","output":"file1.txt\nfile2.txt","timestamp":...}
+
+// Compaction marker (context was compressed)
+{"type":"compaction","id":"abc123","summary":"## Goal\n...","firstKeptEntryId":"xyz","tokensBefore":180000,"timestamp":"..."}
 ```
 
+**Write Sources (who writes to transcript):**
+
+| Module | What it writes |
+|--------|----------------|
+| `agents/pi-embedded-runner/run/attempt.ts` | Messages, tool calls, responses |
+| `agents/pi-embedded-runner/compact.ts` | Compaction summaries |
+| `config/sessions/transcript.ts` | Outbound message mirrors |
+| `gateway/server-methods/chat.ts` | Gateway API messages |
+
+**Read Sources (who reads from transcript):**
+
+| Module | Purpose |
+|--------|---------|
+| `pi-embedded-runner` | Load history as context for LLM |
+| `compact.ts` | Read messages for compaction |
+| `gateway/chat.ts` | `/history` API endpoint |
+| `auto-reply/session.ts` | Subagent inherits parent context |
+
 **Key Operations:**
-- **Append-only writes** for durability
+- **Append-only writes** for durability (file is never truncated)
 - **Streaming reads** for large transcripts
 - **Compaction markers** to track context compression events
+
+**Lifecycle:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: First message arrives
+    Created --> Active: Header written
+    Active --> Active: appendMessage()
+    Active --> Compacted: Context limit reached
+    Compacted --> Active: Summary written, continue
+    Active --> Archived: /new or /reset
+    Archived --> [*]: sessionRetention expires
+```
+
+1. **Created**: First message triggers `ensureSessionHeader()` - writes session metadata
+2. **Active**: Each message appended via `SessionManager.appendMessage()`
+3. **Compacted**: When context exceeds limit, compaction writes summary and marks old messages
+4. **Archived**: On reset, new sessionId created, old transcript kept for history
+5. **Cleaned**: After `sessionRetention` period, old transcripts may be deleted
 
 ### 5. Session Reset (`src/config/sessions/reset.ts`)
 
