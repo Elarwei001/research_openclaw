@@ -183,6 +183,57 @@ flowchart LR
 - **File-based locking** to prevent concurrent write corruption
 - **Atomic updates** via read-modify-write pattern
 
+**Read Request Sources:**
+
+| Module | Purpose |
+|--------|---------|
+| `telegram/bot-message-context.ts` | Check session state before processing messages |
+| `discord/monitor/message-handler.process.ts` | Same as above |
+| `slack/monitor/message-handler/prepare.ts` | Same as above |
+| `signal/monitor/event-handler.ts` | Same as above |
+| `heartbeat-runner.ts` | Check which sessions need heartbeat |
+| `agents/tools/session-status-tool.ts` | `/status` command reads state |
+| `agents/subagent-announce.ts` | Subagent checks session state |
+
+**Write Request Sources:**
+
+| Module | Purpose |
+|--------|---------|
+| `heartbeat-runner.ts` | Update `lastHeartbeatAt` timestamp |
+| `agents/pi-embedded-runner/` | Save session state after agent run |
+| `session-status-tool.ts` | `/status model=xxx` sets model override |
+| `auth-profiles/session-override.ts` | Auth profile overrides |
+| `config/sessions/transcript.ts` | Save conversation transcripts |
+
+> **Summary:** Channel modules (Telegram/Discord/Slack/...) primarily read; Agent runtime and Heartbeat primarily write.
+
+**Why File Locking is Necessary:**
+
+Even though OpenClaw is single-process, Node.js's async nature creates concurrent write risks:
+
+```javascript
+// These can interleave!
+async function agentA() {
+  const store = await readFile('sessions.json');  // ① read
+  store['sessionA'] = { ... };                     // ② modify
+  await writeFile('sessions.json', store);         // ⑤ write (overwrites B!)
+}
+
+async function agentB() {
+  const store = await readFile('sessions.json');  // ③ read (stale data)
+  store['sessionB'] = { ... };                     // ④ modify
+  await writeFile('sessions.json', store);         // ⑥ write
+}
+```
+
+Concurrent scenarios:
+- **Multi-channel concurrency** - Telegram and Discord receive messages simultaneously
+- **Heartbeat + message processing** - Heartbeat task and normal messages trigger together
+- **Multiple subagents** - Parallel subagents each updating session state
+- **Long LLM calls** - Agent A calls LLM while Agent B completes and wants to write
+
+Solution: `proper-lockfile` library serializes all writes.
+
 ```typescript
 // Core data structure
 type SessionEntry = {
@@ -435,15 +486,32 @@ agent:main:main
 
 ### Common Session Key Patterns
 
+**Group/Channel Sessions** (consistent format):
+
+```
+agent:{agentId}:{channel}:{peerKind}:{peerId}
+```
+
 | Type | Format | Example |
 |------|--------|---------|
-| Main Session | `agent:{agentId}:main` | `agent:main:main` |
-| Direct Chat | `agent:{agentId}:{channel}:{userId}` | `agent:main:telegram:6813060849` |
-| Group Chat | `agent:{agentId}:{channel}:group:{groupId}` | `agent:main:discord:group:123456` |
-| Channel | `agent:{agentId}:{channel}:channel:{channelId}` | `agent:main:telegram:channel:-100123` |
+| Telegram Group | `agent:{agentId}:telegram:group:{chatId}` | `agent:main:telegram:group:-100123456` |
+| Telegram Forum Topic | `agent:{agentId}:telegram:group:{chatId}:topic:{topicId}` | `agent:main:telegram:group:-100123456:topic:42` |
+| Discord Channel | `agent:{agentId}:discord:channel:{channelId}` | `agent:main:discord:channel:123456789` |
+| Discord Group DM | `agent:{agentId}:discord:group:{channelId}` | `agent:main:discord:group:789` |
 | Cron Job | `agent:{agentId}:cron:{jobId}` | `agent:main:cron:daily-check` |
 | Cron Run | `agent:{agentId}:cron:{jobId}:run:{uuid}` | `agent:main:cron:daily-check:run:abc-123` |
 | Subagent | `agent:{agentId}:subagent:{label}:{uuid}` | `agent:main:subagent:researcher:def-456` |
+
+**DM Sessions** (depends on `dmScope` configuration):
+
+| dmScope | Format | Example |
+|---------|--------|---------|
+| `"main"` (default) | `agent:{agentId}:main` | `agent:main:main` |
+| `"per-peer"` | `agent:{agentId}:direct:{peerId}` | `agent:main:direct:123` |
+| `"per-channel-peer"` | `agent:{agentId}:{channel}:direct:{peerId}` | `agent:main:telegram:direct:123` |
+| `"per-account-channel-peer"` | `agent:{agentId}:{channel}:{accountId}:direct:{peerId}` | `agent:main:telegram:default:direct:123` |
+
+> **Important:** With default `dmScope: "main"`, all DMs across all channels route to the **same main session**. This allows seamless conversation continuity but means Telegram DMs and Discord DMs share context. If you need per-user isolation, configure `dmScope: "per-channel-peer"`.
 
 ### Key Resolution Flow
 
@@ -513,22 +581,37 @@ flowchart TB
 ### Code Example
 
 ```typescript
-// src/routing/session-key.ts
+// src/routing/session-key.ts (simplified)
 function buildAgentPeerSessionKey(params: {
   agentId: string,
   channel: string,      // "telegram"
-  peerId: string,       // "6813060849" ← User ID from channel
-  peerKind: ChatType,   // "direct"
+  peerId: string | null,
+  peerKind: ChatType,   // "direct" | "group" | "channel"
+  dmScope?: "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer",
 }) {
-  // User ID becomes part of the session key
-  return `agent:${agentId}:${channel}:${peerId}`;
+  // For DMs, routing depends on dmScope
+  if (peerKind === "direct") {
+    const dmScope = params.dmScope ?? "main";
+    if (dmScope === "main") {
+      return `agent:${agentId}:main`;  // All DMs share main session
+    }
+    if (dmScope === "per-channel-peer") {
+      return `agent:${agentId}:${channel}:direct:${peerId}`;
+    }
+    // ... other dmScope options
+  }
+  
+  // For groups/channels, include peerKind in the key
+  return `agent:${agentId}:${channel}:${peerKind}:${peerId}`;
 }
 
-// Result: "agent:main:telegram:6813060849"
-// Each user gets their own unique session key
+// Examples:
+// DM (default):  "agent:main:main"
+// DM (per-channel-peer): "agent:main:telegram:direct:6813060849"
+// Group: "agent:main:telegram:group:-100123456"
 ```
 
-> **Key Point:** The channel provides the user ID → it becomes part of the Session Key → different users are automatically isolated into separate sessions.
+> **Key Point:** With default `dmScope: "main"`, all DMs route to the same main session. For groups/channels, the session key includes the peerKind and peerId, providing automatic isolation per group.
 
 ---
 
@@ -552,21 +635,86 @@ Restrict which users can interact with your bot:
 }
 ```
 
-### 2. DM vs Group Permission Separation
+### 2. DM Policy and Pairing
 
-Configure different policies for private chats and groups:
+Configure how the bot handles DMs from unknown users:
+
+**dmPolicy Options:**
+
+| Value | Behavior |
+|-------|----------|
+| `"pairing"` | Unknown senders trigger pairing flow (secure, recommended) |
+| `"allowlist"` | Unknown senders silently ignored |
+| `"open"` | Anyone can DM (not recommended for public bots) |
 
 ```json
 {
-  "telegram": {
-    "accounts": [{
-      "token": "...",
-      "dm": "allowlist",              // DMs: only allowlisted users
-      "dmAllowlist": ["6813060849"],
-      "groups": "mention"             // Groups: only respond when @mentioned
-    }]
+  "channels": {
+    "telegram": {
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist"
+    }
   }
 }
+```
+
+**Pairing Flow (when `dmPolicy: "pairing"`):**
+
+```mermaid
+sequenceDiagram
+    participant S as Stranger
+    participant B as Bot
+    participant P as Pairing Store
+    participant O as Owner (CLI)
+    participant A as AllowFrom Store
+    
+    S->>B: Sends DM
+    B->>P: Generate pairing code
+    P-->>B: Code: PAIRME12
+    B->>S: "Pairing code: PAIRME12<br/>Run: openclaw pairing approve telegram PAIRME12"
+    
+    Note over O: Owner runs CLI command
+    O->>A: openclaw pairing approve telegram PAIRME12
+    A-->>O: User added to allowlist
+    
+    S->>B: Sends another DM
+    B->>A: Check allowlist
+    A-->>B: User allowed
+    B->>S: Normal response
+```
+
+**Step-by-step:**
+
+1. **Stranger sends DM** to your bot
+2. **Bot returns pairing info:**
+   ```
+   👋 Hi! I don't recognize you yet.
+   
+   Your Telegram user id: 6813060849
+   Pairing code: PAIRME12
+   
+   To connect, run on your machine:
+   openclaw pairing approve telegram PAIRME12
+   ```
+3. **Owner approves** on local machine:
+   ```bash
+   openclaw pairing approve telegram PAIRME12
+   ```
+4. **User added to allowlist** - stored in `~/.openclaw/credentials/telegram-allowFrom.json`
+5. **Future DMs work normally**
+
+**Pairing CLI Commands:**
+
+```bash
+# List pending pairing requests
+openclaw pairing list telegram
+
+# Approve a pairing request
+openclaw pairing approve telegram PAIRME12
+
+# Related files
+~/.openclaw/credentials/telegram-pairing.json    # Pending requests
+~/.openclaw/credentials/telegram-allowFrom.json  # Approved users
 ```
 
 ### 3. Group Activation Modes
