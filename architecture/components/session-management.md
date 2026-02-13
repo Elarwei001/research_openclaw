@@ -9,24 +9,85 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 
 ## Table of Contents
 
-0. [Landscape: End-to-End Message Flow](#landscape-end-to-end-message-flow)
-1. [Overview](#overview)
-2. [Session Architecture](#session-architecture)
-3. [Core Modules](#core-modules)
-4. [Session Key System](#session-key-system)
-5. [User Identification](#user-identification)
-6. [Security and Access Control](#security-and-access-control)
-7. [Multi-Agent Configuration](#multi-agent-configuration)
-8. [Message Flow and Collaboration](#message-flow-and-collaboration)
-9. [Token Management](#token-management)
-10. [Cache Management](#cache-management)
-11. [Session Lifecycle](#session-lifecycle)
+**Part 1: Overview**
+1. [What is a Session?](#1-what-is-a-session)
+2. [Landscape: End-to-End Message Flow](#2-landscape-end-to-end-message-flow)
+
+**Part 2: Architecture**
+3. [System Architecture](#3-system-architecture)
+4. [Storage Structure](#4-storage-structure)
+
+**Part 3: Core Concepts**
+5. [Session Key System](#5-session-key-system)
+6. [Session Routing (Peer)](#6-session-routing-peer)
+
+**Part 4: Core Modules**
+7. [Session Store](#7-session-store)
+8. [Transcript Manager](#8-transcript-manager)
+9. [Session Reset](#9-session-reset)
+
+**Part 5: Token & Cache**
+10. [Token Management](#10-token-management)
+11. [KV Cache Optimization](#11-kv-cache-optimization)
+
+**Part 6: Security**
+12. [Access Control](#12-access-control)
+13. [DM Pairing](#13-dm-pairing)
+
+**Part 7: Advanced Topics**
+14. [Multi-Agent Configuration](#14-multi-agent-configuration)
+15. [User Identification](#15-user-identification)
+16. [Session Lifecycle](#16-session-lifecycle)
+
+**Appendices**
+- [Appendix A: Sequence Diagram Step-by-Step](#appendix-a-sequence-diagram-step-by-step)
+- [Appendix B: Related Source Files](#appendix-b-related-source-files)
+- [Appendix C: References](#appendix-c-references)
 
 ---
 
-## Landscape: End-to-End Message Flow
+# Part 1: Overview
 
-This sequence diagram shows the complete journey of a user message through OpenClaw, from arrival to response delivery. All module names and function names are based on actual source code.
+## 1. What is a Session?
+
+A Session can be understood as a "conversation session" that contains:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Session                              │
+├─────────────────────────────────────────────────────────────┤
+│  • sessionId: UUID unique identifier                         │
+│  • sessionKey: routing key (e.g., "agent:main:main")        │
+│  • conversation history (transcript)                         │
+│  • token usage statistics                                    │
+│  • model/provider configuration                              │
+│  • user preferences (thinking level, verbose mode...)       │
+│  • delivery context (channel, to, accountId...)             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Concepts
+
+#### SessionScope (Isolation Mode)
+
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| `per-sender` | Each user gets an independent session | **Default**. User A and B have separate histories |
+| `global` | All users share the same session | Everyone sees the same conversation (rare) |
+
+#### SessionChatType (Chat Type)
+
+| Value | Description | Examples |
+|-------|-------------|----------|
+| `direct` | One-on-one private chat | Telegram DM, Discord DM |
+| `group` | Group chat | Telegram Group, Discord Server |
+| `channel` | Broadcast channel | Telegram Channel |
+
+---
+
+## 2. Landscape: End-to-End Message Flow
+
+This sequence diagram shows the complete journey of a user message through OpenClaw. All module names and function names are based on actual source code.
 
 ```mermaid
 sequenceDiagram
@@ -126,137 +187,6 @@ sequenceDiagram
     Channel->>User: Send response (Telegram API)
 ```
 
-### Phase 3 Deep Dive: Prepare Agent Execution
-
-This phase involves three key functions that transform user input into an agent-ready request:
-
-#### 1. `resolveReplyDirectives()` — Parse Inline Commands
-
-**Location:** `auto-reply/reply/get-reply-directives.ts`
-
-Scans the user message for **inline directives** (slash commands) and extracts settings:
-
-```
-User message: "帮我写个脚本 /think high /model sonnet"
-                              │           │
-                              ▼           ▼
-                    thinkLevel="high"  model="sonnet"
-```
-
-**Supported directives:**
-
-| Directive | Effect | Example |
-|-----------|--------|---------|
-| `/think <level>` | Set thinking depth | `/think high`, `/think off` |
-| `/model <name>` | Switch model | `/model sonnet`, `/model gpt-4o` |
-| `/verbose` | Show tool outputs | `/verbose on` |
-| `/elevated` | Enable elevated mode | `/elevated on` |
-| `/reasoning` | Enable reasoning display | `/reasoning stream` |
-
-**Output:** `InlineDirectives` object + cleaned message body (directives stripped)
-
-#### 2. `runPreparedReply()` — Prepare Execution Context
-
-**Location:** `auto-reply/reply/get-reply-run.ts`
-
-Assembles all the pieces needed for agent execution:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                  runPreparedReply()                     │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  Inputs:                                                │
-│  • User message (cleaned)                              │
-│  • Parsed directives (think level, model, etc.)        │
-│  • Session state (from initSessionState)               │
-│  • Config (agents, workspace, tools)                   │
-│                                                         │
-│  Processing:                                            │
-│  ├─ Resolve session file path                          │
-│  ├─ Build system prompt (workspace files + context)    │
-│  ├─ Prepare tool definitions                           │
-│  ├─ Handle group chat intro (if needed)                │
-│  ├─ Check idle timeout → trigger reset if needed       │
-│  ├─ Inject system events (pending notifications)       │
-│  └─ Ensure skill snapshot                              │
-│                                                         │
-│  Output: Ready to call runEmbeddedPiAgent()            │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Key tasks:**
-- `resolveSessionFilePath()` — Locate the transcript `.jsonl` file
-- `buildInboundMetaSystemPrompt()` — Add message metadata to system prompt
-- `buildGroupIntro()` — Inject group chat context for first message
-- `prependSystemEvents()` — Add pending system notifications to prompt
-- `ensureSkillSnapshot()` — Cache skill definitions for the session
-
-#### 3. `runEmbeddedPiAgent()` — Execute Agent
-
-**Location:** `agents/pi-embedded-runner/run.ts`
-
-The main entry point for agent execution:
-
-```
-runEmbeddedPiAgent({
-  sessionFile: "~/.openclaw/agents/main/sessions/abc-123.jsonl",
-  prompt: "帮我写个脚本",           // cleaned user message
-  thinkLevel: "high",               // from directives
-  provider: "anthropic",            // resolved model
-  modelId: "claude-sonnet-4-5",
-  workspaceDir: "/Users/user/clawd",
-  timeoutMs: 300000,
-  ...
-})
-```
-
-**Internally calls `runEmbeddedAttempt()`** which:
-
-1. **Acquire session lock** — Prevent concurrent writes
-2. **Load transcript** — `SessionManager.open(sessionFile)`
-3. **Sanitize history** — `sanitizeSessionHistory()`, `limitHistoryTurns()`
-4. **Create agent session** — Initialize LLM connection
-5. **Apply system prompt** — Inject workspace files, skills, context
-6. **Execute prompt** — `activeSession.prompt(userMessage)`
-7. **Handle streaming** — Process tokens, tool calls, responses
-8. **Persist results** — Append to transcript, update session store
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              runEmbeddedPiAgent() Flow                  │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────┐                                        │
-│  │ Session Lock │◄── acquireSessionWriteLock()         │
-│  └──────┬──────┘                                        │
-│         │                                               │
-│         ▼                                               │
-│  ┌─────────────┐                                        │
-│  │ Load History│◄── SessionManager.open()              │
-│  └──────┬──────┘    sanitizeSessionHistory()           │
-│         │                                               │
-│         ▼                                               │
-│  ┌─────────────┐                                        │
-│  │ Create Agent│◄── createAgentSession()               │
-│  └──────┬──────┘    applySystemPromptOverride()        │
-│         │                                               │
-│         ▼                                               │
-│  ┌─────────────┐    ┌─────────────────────┐            │
-│  │ Execute     │───►│ LLM API (streaming) │            │
-│  │ Prompt      │◄───│ tokens, tool_use    │            │
-│  └──────┬──────┘    └─────────────────────┘            │
-│         │                                               │
-│         ▼                                               │
-│  ┌─────────────┐                                        │
-│  │ Persist     │◄── appendMessage()                    │
-│  │ Results     │    updateSessionStore()               │
-│  └─────────────┘                                        │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
 ### Key Modules Reference
 
 | Phase | Module | Key Functions |
@@ -270,40 +200,6 @@ runEmbeddedPiAgent({
 | | `agents/pi-embedded-runner/run/attempt.ts` | `runEmbeddedAttempt()` |
 | **Transcript** | `@mariozechner/pi-coding-agent` | `SessionManager.open()`, `appendMessage()` |
 | **LLM Call** | `@mariozechner/pi-ai` | `streamSimple()`, `activeSession.prompt()` |
-
-### Key Concept: Peer
-
-In the routing phase, `peer` represents "who you're chatting with":
-
-```typescript
-type RoutePeer = {
-  kind: "direct" | "group" | "channel";  // conversation type
-  id: string;                             // identifier
-};
-```
-
-| Scenario | peer.kind | peer.id | Example |
-|----------|-----------|---------|---------|
-| Telegram DM | `"direct"` | user ID | `"6813060849"` |
-| Telegram Group | `"group"` | chat ID | `"-100123456"` |
-| Telegram Channel | `"channel"` | channel ID | `"-100789"` |
-| Discord Channel | `"channel"` | channel ID | `"123456789"` |
-| Discord DM | `"direct"` | user ID | `"987654321"` |
-
-The peer information flows through the routing pipeline:
-
-```
-Telegram Message
-     │
-     ▼ buildTelegramMessageContext()
-peer = { kind: "group", id: "-100123456" }
-     │
-     ▼ resolveAgentRoute({cfg, channel, peer})
-     │
-     ▼ buildAgentPeerSessionKey({peerKind, peerId, ...})
-     │
-     ▼ sessionKey = "agent:main:telegram:group:-100123456"
-```
 
 ### Data Flow Summary
 
@@ -343,70 +239,9 @@ User Message
 
 ---
 
-## Overview
+# Part 2: Architecture
 
-A Session can be understood as a "conversation session" that contains:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Session                              │
-├─────────────────────────────────────────────────────────────┤
-│  • sessionId: UUID unique identifier                         │
-│  • sessionKey: routing key (e.g., "agent:main:main")        │
-│  • conversation history (transcript)                         │
-│  • token usage statistics                                    │
-│  • model/provider configuration                              │
-│  • user preferences (thinking level, verbose mode...)       │
-│  • delivery context (channel, to, accountId...)             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Concepts
-
-#### SessionScope (Session Isolation Mode)
-
-Determines **how sessions are isolated between different users**:
-
-| Value | Description | Use Case |
-|-------|-------------|----------|
-| `per-sender` | Each user gets an independent session | **Default**. User A and User B have separate conversation histories |
-| `global` | All users share the same session | Everyone sees the same conversation history (rare) |
-
-```mermaid
-flowchart LR
-    subgraph PerSender["per-sender (Default)"]
-        UA[User A] --> SA[Session A]
-        UB[User B] --> SB[Session B]
-        UC[User C] --> SC[Session C]
-    end
-    
-    subgraph Global["global"]
-        UA2[User A] --> SG[Shared Session]
-        UB2[User B] --> SG
-        UC2[User C] --> SG
-    end
-```
-
-#### SessionChatType (Chat Type)
-
-Describes **the type of chat the message originates from**:
-
-| Value | Description | Examples |
-|-------|-------------|----------|
-| `direct` | One-on-one private chat | Telegram DM, Discord DM |
-| `group` | Group chat | Telegram Group, Discord Server |
-| `channel` | Broadcast channel | Telegram Channel, Discord Announcement |
-
-**Impact on behavior:**
-- Session Key generation pattern
-- Whether @mention is required to respond (group activation)
-- Message delivery target
-
----
-
-## Session Architecture
-
-### Overall Architecture Diagram
+## 3. System Architecture
 
 ```mermaid
 flowchart TB
@@ -445,91 +280,140 @@ flowchart TB
     S1 & S2 & S3 & S4 --> Trans
 ```
 
-### Storage Structure
+## 4. Storage Structure
 
 ```
 ~/.openclaw/
-├── sessions/
-│   └── sessions.json              # Legacy/global session metadata
+├── sessions.json                   # Legacy/global session metadata
 │
 ├── agents/
-│   ├── main/                       # Default agent (always exists)
+│   ├── main/                       # Default agent
 │   │   └── sessions/
-│   │       ├── sessions.json       # Agent-specific session metadata
+│   │       ├── sessions.json       # Session metadata (index)
 │   │       ├── abc-123.jsonl       # Transcript for session abc-123
 │   │       └── def-456.jsonl       # Transcript for session def-456
 │   │
-│   ├── research/                   # Custom agent: "research"
-│   │   └── sessions/
-│   │       ├── sessions.json
-│   │       └── *.jsonl
-│   │
-│   └── code/                       # Custom agent: "code"
+│   └── research/                   # Custom agent
 │       └── sessions/
 │           ├── sessions.json
 │           └── *.jsonl
 ```
 
-> **Note:** `{agent-id}` in the path refers to custom agents you configure in `openclaw.json`. The `main` agent always exists as the default.
+**Two types of files:**
+
+| File | Content | Purpose |
+|------|---------|---------|
+| `sessions.json` | Metadata (sessionId, tokens, config) | Quick lookup, statistics |
+| `*.jsonl` | Full conversation history | LLM context, audit trail |
 
 ---
 
-## Core Modules
+# Part 3: Core Concepts
 
-### 1. Session Store (`src/config/sessions/store.ts`)
+## 5. Session Key System
 
-Responsible for persistent storage of session metadata.
+Session Key is the unique routing identifier for sessions.
+
+### Format
+
+```
+agent:main:telegram:group:-100123456
+  │    │       │      │        │
+  │    │       │      │        └── Peer ID (chat/user ID)
+  │    │       │      └── Peer Kind (direct/group/channel)
+  │    │       └── Channel (telegram/discord/...)
+  │    └── Agent ID (main/research/...)
+  └── Prefix (literal "agent")
+```
+
+### Common Patterns
+
+**Group/Channel Sessions:**
+
+| Type | Example |
+|------|---------|
+| Telegram Group | `agent:main:telegram:group:-100123456` |
+| Telegram Forum | `agent:main:telegram:group:-100123456:topic:42` |
+| Discord Channel | `agent:main:discord:channel:123456789` |
+| Cron Job | `agent:main:cron:daily-check` |
+
+**DM Sessions** (depends on `dmScope`):
+
+| dmScope | Format |
+|---------|--------|
+| `"main"` (default) | `agent:main:main` ← All DMs share this! |
+| `"per-channel-peer"` | `agent:main:telegram:direct:123` |
+
+> **Important:** Default `dmScope: "main"` means all DMs route to the same session!
+
+---
+
+## 6. Session Routing (Peer)
+
+`peer` represents "who you're chatting with":
+
+```typescript
+type RoutePeer = {
+  kind: "direct" | "group" | "channel";
+  id: string;
+};
+```
+
+| Scenario | peer.kind | peer.id |
+|----------|-----------|---------|
+| Telegram DM | `"direct"` | `"6813060849"` |
+| Telegram Group | `"group"` | `"-100123456"` |
+| Discord Channel | `"channel"` | `"123456789"` |
+
+### Routing Flow
+
+```
+Telegram Message
+     │
+     ▼ buildTelegramMessageContext()
+peer = { kind: "group", id: "-100123456" }
+     │
+     ▼ resolveAgentRoute({cfg, channel, peer})
+     │
+     ▼ buildAgentPeerSessionKey({peerKind, peerId, ...})
+     │
+     ▼ sessionKey = "agent:main:telegram:group:-100123456"
+```
+
+---
+
+# Part 4: Core Modules
+
+## 7. Session Store
+
+**Location:** `src/config/sessions/store.ts`
+
+Manages persistent storage of session metadata in `sessions.json`.
+
+### Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Store["Session Store"]
-        Cache[In-Memory Cache<br/>TTL: 45s]
-        File[(sessions.json)]
-    end
-    
-    Read[Read Request] --> Cache
+    Read[Read Request] --> Cache{Cache<br/>Valid?}
     Cache -->|Hit| Return[Return Data]
-    Cache -->|Miss| File
-    File --> Cache
-    Cache --> Return
+    Cache -->|Miss| File[(sessions.json)]
+    File --> Update[Update Cache]
+    Update --> Return
     
     Write[Write Request] --> Lock[Acquire Lock]
     Lock --> File
     File --> Invalidate[Invalidate Cache]
 ```
 
-**Key Features:**
-- **In-memory caching** with 45-second TTL for performance
-- **File-based locking** to prevent concurrent write corruption
-- **Atomic updates** via read-modify-write pattern
+### Key Features
 
-**Read Request Sources:**
+- **In-memory cache** (TTL: 45s)
+- **File-based locking** (`proper-lockfile`)
+- **Atomic read-modify-write**
 
-| Module | Purpose |
-|--------|---------|
-| `telegram/bot-message-context.ts` | Check session state before processing messages |
-| `discord/monitor/message-handler.process.ts` | Same as above |
-| `slack/monitor/message-handler/prepare.ts` | Same as above |
-| `signal/monitor/event-handler.ts` | Same as above |
-| `heartbeat-runner.ts` | Check which sessions need heartbeat |
-| `agents/tools/session-status-tool.ts` | `/status` command reads state |
-| `agents/subagent-announce.ts` | Subagent checks session state |
+### Why Locking?
 
-**Write Request Sources:**
-
-| Module | Purpose |
-|--------|---------|
-| `heartbeat-runner.ts` | Update `lastHeartbeatAt` timestamp |
-| `agents/pi-embedded-runner/` | Save session state after agent run |
-| `session-status-tool.ts` | `/status model=xxx` sets model override |
-| `auth-profiles/session-override.ts` | Auth profile overrides |
-| `config/sessions/transcript.ts` | Save conversation transcripts |
-
-> **Summary:** Channel modules (Telegram/Discord/Slack/...) primarily read; Agent runtime and Heartbeat primarily write.
-
-**Why File Locking is Necessary:**
-
-Even though OpenClaw is single-process, Node.js's async nature creates concurrent write risks:
+Node.js async can cause race conditions:
 
 ```javascript
 // These can interleave!
@@ -540,1391 +424,381 @@ async function agentA() {
 }
 
 async function agentB() {
-  const store = await readFile('sessions.json');  // ③ read (stale data)
+  const store = await readFile('sessions.json');  // ③ read (stale!)
   store['sessionB'] = { ... };                     // ④ modify
   await writeFile('sessions.json', store);         // ⑥ write
 }
 ```
 
-Concurrent scenarios:
-- **Multi-channel concurrency** - Telegram and Discord receive messages simultaneously
-- **Heartbeat + message processing** - Heartbeat task and normal messages trigger together
-- **Multiple subagents** - Parallel subagents each updating session state
-- **Long LLM calls** - Agent A calls LLM while Agent B completes and wants to write
+**Solution:** `proper-lockfile` serializes all writes.
 
-Solution: `proper-lockfile` library serializes all writes.
-
-**Why a single file causes conflicts (even for different sessions):**
-
-```
-sessions.json
-┌──────────────────────────────────────────────────┐
-│ {                                                 │
-│   "agent:main:telegram:group:-100123": {          │  ← Telegram wants to update
-│     "updatedAt": 1234567890,                      │
-│     "inputTokens": 1000                           │
-│   },                                              │
-│   "agent:main:discord:channel:456": {             │  ← Discord wants to update
-│     "updatedAt": 1234567891,                      │
-│     "inputTokens": 2000                           │
-│   }                                               │
-│ }                                                 │
-└──────────────────────────────────────────────────┘
-```
-
-Even though they modify **different keys**, the write operation replaces the **entire file**, so the later write overwrites the earlier one's changes.
-
-**Alternative Architecture: Per-Session Files**
-
-Splitting each session into its own file would eliminate cross-session write conflicts:
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Single file** (current) | Fast queries (list all sessions), simple | Requires file locking |
-| **Per-session files** | No cross-session conflicts | Directory traversal for listing, more file handles |
-| **SQLite/Database** | Row-level writes, ACID transactions | More complex setup |
-
-> **Note:** This is a design trade-off. The current single-file approach with proper locking works correctly, but a per-session file architecture would be more naturally concurrent-safe.
+### Data Structure
 
 ```typescript
-// Core data structure
 type SessionEntry = {
-  sessionId: string;          // UUID
-  updatedAt: number;          // Last update timestamp
-  sessionFile?: string;       // Transcript file path
+  sessionId: string;           // UUID
+  sessionFile?: string;        // Path to transcript
+  updatedAt: number;           // Timestamp
   
-  // Token statistics
+  // Token stats
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
-  totalTokensFresh?: boolean; // Whether token data is fresh
-  contextTokens?: number;     // Model context window size
   
-  // Model configuration
-  modelProvider?: string;
-  model?: string;
-  providerOverride?: string;
+  // Config
   modelOverride?: string;
+  thinkingLevel?: string;
   
-  // User preferences
-  thinkingLevel?: string;     // off/low/medium/high
-  verboseLevel?: string;
-  sendPolicy?: "allow" | "deny";
-  
-  // Delivery context
+  // Delivery
   lastChannel?: string;
   lastTo?: string;
-  lastAccountId?: string;
-  deliveryContext?: DeliveryContext;
 };
 ```
 
-### 2. Session Types (`src/config/sessions/types.ts`)
+---
 
-Defines session types and utility functions.
+## 8. Transcript Manager
 
-```typescript
-// Session scope - how to isolate users
-type SessionScope = "per-sender" | "global";
+**Location:** `src/config/sessions/transcript.ts`
 
-// Chat type - where the message comes from
-type SessionChatType = "direct" | "group" | "channel";
+Manages conversation history in JSONL format.
 
-// Session origin information - metadata about message source
-type SessionOrigin = {
-  label?: string;
-  provider?: string;      // telegram, discord, etc.
-  surface?: string;       // chat, voice, etc.
-  chatType?: SessionChatType;
-  from?: string;          // sender identifier
-  to?: string;            // recipient identifier
-  accountId?: string;     // bot account used
-};
-```
-
-### 3. Session Router (`src/routing/session-key.ts`)
-
-Routes messages to the correct session by building and parsing session keys.
-
-```mermaid
-flowchart TB
-    subgraph Input["Incoming Message"]
-        Channel[Channel: telegram]
-        ChatType[ChatType: group]
-        GroupId[GroupId: -100123456]
-        SenderId[SenderId: 6813060849]
-    end
-    
-    subgraph Resolution["Key Resolution"]
-        GetAgent[1. Determine Agent ID<br/>from channel binding<br/>or default: main]
-        GetScope[2. Determine Scope<br/>per-sender or global]
-        BuildKey[3. Build Session Key]
-    end
-    
-    subgraph Output["Session Key"]
-        Key["agent:main:telegram:group:-100123456"]
-    end
-    
-    Input --> GetAgent
-    GetAgent --> GetScope
-    GetScope --> BuildKey
-    BuildKey --> Key
-```
-
-**Key Functions:**
-
-```typescript
-// Build session key for an agent's main session
-buildAgentMainSessionKey({ agentId: "main", mainKey: "main" })
-// → "agent:main:main"
-
-// Build session key for a peer (user/group) session
-buildAgentPeerSessionKey({
-  agentId: "main",
-  channel: "telegram",
-  peerId: "6813060849",
-  peerKind: "direct"
-})
-// → "agent:main:telegram:6813060849"
-
-// Extract agent ID from session key
-resolveAgentIdFromSessionKey("agent:research:cron:daily")
-// → "research"
-```
-
-### 4. Transcript Manager (`src/config/sessions/transcript.ts`)
-
-Manages reading and writing of conversation history stored in JSONL format. The transcript file is the complete record of a session's conversation.
-
-**Storage Location:**
+### Storage
 
 ```
 ~/.openclaw/agents/{agentId}/sessions/{sessionId}.jsonl
 ```
 
-Example: `~/.openclaw/agents/main/sessions/104bf722-75e1-449a-8194-ddabc98a7908.jsonl`
-
-The `sessionFile` field in `SessionEntry` points to this transcript file.
-
-```mermaid
-flowchart LR
-    subgraph Write["Write Flow"]
-        NewMsg[New Message] --> Append[Append to .jsonl]
-        Append --> Flush[Flush to Disk]
-    end
-    
-    subgraph Read["Read Flow"]
-        Load[Load Session] --> Parse[Parse JSONL]
-        Parse --> Filter[Filter by Type]
-        Filter --> Messages[Message Array]
-    end
-    
-    subgraph File["Transcript File"]
-        JSONL["session-abc.jsonl<br/>─────────────────<br/>{message: {...}}<br/>{message: {...}}<br/>{type: compaction}<br/>{message: {...}}"]
-    end
-    
-    Flush --> JSONL
-    JSONL --> Parse
-```
-
-**Complete JSONL Structure:**
+### JSONL Structure
 
 ```jsonl
-// Session header (first line)
-{"type":"session","version":3,"id":"104bf722...","timestamp":"2026-01-31T14:58:20Z","cwd":"/Users/user/workspace"}
-
-// Model/config changes
-{"type":"model_change","provider":"anthropic","modelId":"claude-opus-4-5","timestamp":"..."}
-{"type":"thinking_level_change","thinkingLevel":"low","timestamp":"..."}
-
-// Custom events (cache tracking, etc.)
-{"type":"custom","customType":"openclaw.cache-ttl","data":{...},"timestamp":"..."}
-{"type":"custom","customType":"model-snapshot","data":{...},"timestamp":"..."}
-
-// User message
-{"type":"user_message","content":[{"type":"text","text":"Hello"}],"timestamp":...}
-
-// Assistant response with tool use
-{"type":"assistant_message","content":[...],"usage":{"input":100,"output":50},"timestamp":...}
-{"type":"tool_use","name":"exec","input":{"command":"ls"},"timestamp":...}
-{"type":"tool_result","output":"file1.txt\nfile2.txt","timestamp":...}
-
-// Compaction marker (context was compressed)
-{"type":"compaction","id":"abc123","summary":"## Goal\n...","firstKeptEntryId":"xyz","tokensBefore":180000,"timestamp":"..."}
+{"type":"session","version":3,"id":"abc-123","timestamp":"..."}
+{"type":"model_change","provider":"anthropic","modelId":"claude-opus-4-5"}
+{"type":"user_message","content":[{"type":"text","text":"Hello"}]}
+{"type":"assistant_message","content":[...],"usage":{...}}
+{"type":"tool_use","name":"exec","input":{"command":"ls"}}
+{"type":"tool_result","output":"file1.txt\nfile2.txt"}
+{"type":"compaction","summary":"...","firstKeptEntryId":"xyz"}
 ```
 
-**Write Sources (who writes to transcript):**
+### Key Properties
 
-| Module | What it writes |
-|--------|----------------|
-| `agents/pi-embedded-runner/run/attempt.ts` | Messages, tool calls, responses |
-| `agents/pi-embedded-runner/compact.ts` | Compaction summaries |
-| `config/sessions/transcript.ts` | Outbound message mirrors |
-| `gateway/server-methods/chat.ts` | Gateway API messages |
+- **Append-only** — File never truncated
+- **Compaction markers** — Old messages skipped, not deleted
+- **Cache-friendly** — Stable prefix for KV cache
 
-**Read Sources (who reads from transcript):**
-
-| Module | Purpose |
-|--------|---------|
-| `pi-embedded-runner` | Load history as context for LLM |
-| `compact.ts` | Read messages for compaction |
-| `gateway/chat.ts` | `/history` API endpoint |
-| `auto-reply/session.ts` | Subagent inherits parent context |
-
-**Key Operations:**
-- **Append-only writes** for durability (file is never truncated)
-- **Streaming reads** for large transcripts
-- **Compaction markers** to track context compression events
-
-**Lifecycle:**
-
-```mermaid
-stateDiagram-v2
-    [*] --> Created: First message arrives
-    Created --> Active: Header written
-    Active --> Active: appendMessage()
-    Active --> Compacted: Context limit reached
-    Compacted --> Active: Summary written, continue
-    Active --> Archived: /new or /reset
-    Archived --> [*]: sessionRetention expires
-```
-
-1. **Created**: First message triggers `ensureSessionHeader()` - writes session metadata
-2. **Active**: Each message appended via `SessionManager.appendMessage()`
-3. **Compacted**: When context exceeds limit, compaction writes summary and marks old messages
-4. **Archived**: On reset, new sessionId created, old transcript kept for history
-5. **Cleaned**: After `sessionRetention` period, old transcripts may be deleted
-
-**Transcript and KV Cache:**
-
-The transcript content is loaded and sent to the LLM as conversation history:
+### Lifecycle
 
 ```
-transcript.jsonl
-      │
-      ▼ SessionManager.buildSessionContext()
-┌─────────────────┐
-│ messages: [     │
-│   {role: user}  │  ← old messages (prefix)
-│   {role: asst}  │  ← old messages (prefix)
-│   {role: user}  │  ← new message
-│ ]               │
-└────────┬────────┘
-         │
-         ▼ LLM API
-   [system + messages]
+First Message → Create file + header
+     │
+     ▼ appendMessage()
+Active conversation (append-only)
+     │
+     ▼ Context limit reached
+Compaction (add summary, mark old messages)
+     │
+     ▼ /new or /reset
+Archive (create new file, keep old)
+     │
+     ▼ sessionRetention expires
+Delete (optional cleanup)
 ```
 
-**Why append-only transcript is cache-friendly:**
+---
+
+## 9. Session Reset
+
+**Location:** `src/config/sessions/reset.ts`
+
+### Triggers
+
+| Trigger | Condition |
+|---------|-----------|
+| `/new`, `/reset` | User command |
+| Idle timeout | No activity for `idleMinutes` |
+| API | `sessions.reset` call |
+
+### Behavior
+
+**Preserved** (user preferences):
+- thinkingLevel, verboseLevel
+- modelOverride, providerOverride
+- sendPolicy, deliveryContext
+
+**Cleared** (conversation state):
+- sessionId → new UUID
+- sessionFile → new path
+- token counters → reset
+
+---
+
+# Part 5: Token & Cache
+
+## 10. Token Management
+
+### Statistics Tracked
+
+| Field | Description |
+|-------|-------------|
+| `inputTokens` | Total input tokens used |
+| `outputTokens` | Total output tokens used |
+| `totalTokens` | Sum of input + output |
+| `contextTokens` | Current context window size |
+
+### Compaction
+
+When context approaches limit (~180k tokens):
+
+```
+Before:
+[system] [msg1] [msg2] ... [msg50] [msg51]
+         └────────────────────────────────┘
+                   180k tokens (full!)
+
+After:
+[system] [summary: "User discussed X, Y, Z..."] [msg51]
+         └──────────────────────────────────────────┘
+                   ~20k tokens (fresh!)
+```
+
+---
+
+## 11. KV Cache Optimization
+
+### Why Transcript is Cache-Friendly
+
+Transcript is **append-only**, so prefix stays stable:
 
 ```
 Request 1: [system] [msg1] [msg2] [msg3]
                     └──────────────┘
-                       cacheable prefix
+                       cacheable
 
 Request 2: [system] [msg1] [msg2] [msg3] [msg4]
-                    └──────────────┘ ← cache hit!
-                                     └──┘ only compute new part
+                    └──────────────┘ cache hit!
+                                     └──┘ compute only this
 ```
 
-Since transcript is **append-only**, the message prefix naturally remains stable across requests, which is exactly what LLM providers need for KV cache reuse.
+### Cache-Breaking Scenarios
 
-**Cache-breaking scenarios:**
+| Scenario | What happens |
+|----------|--------------|
+| **Compaction** | History → summary, prefix changes |
+| **Context pruning** | Old messages removed |
+| **Workspace file edit** | System prompt changes |
+| **Tool result truncation** | Old results shortened |
 
-| Scenario | Impact |
-|----------|--------|
-| **Compaction** | History replaced with summary → entire prefix changes |
-| **Context pruning** | Old messages trimmed → prefix changes |
-| **Workspace files change** | System prompt content changes → prefix changes |
-| **Tool result truncation** | Old tool results truncated on reload → prefix changes |
-
-**Scenario 1: Compaction**
-
-When conversation history approaches the model's context limit (~180k tokens for Claude), OpenClaw triggers compaction:
-
-```
-Before compaction:
-[system] [msg1] [msg2] [msg3] ... [msg50] [msg51]
-         └─────────────────────────────────────┘
-                    180k tokens (full!)
-
-After compaction:
-[system] [summary: "User discussed X, Y, Z..."] [msg51]
-         └──────────────────────────────────────────┘
-                    ~20k tokens (fresh start)
-```
-
-**Trigger**: `contextTokens > model.contextWindow * threshold` (typically 90%)
-
-The entire message prefix is replaced with a summary, invalidating all cached KV states.
-
-**Scenario 2: Context Pruning**
-
-With `contextPruning.mode: "aggressive"` or after cache TTL expires in `cache-ttl` mode:
-
-```
-Before pruning:
-[system] [old_msg1] [old_msg2] [recent_msg1] [recent_msg2] [new_msg]
-         └─────────────────────────────────────────────────────────┘
-
-After pruning (keepLastAssistants: 3):
-[system] [recent_msg1] [recent_msg2] [new_msg]
-         └────────────────────────────────────┘
-```
-
-**Trigger**: 
-- `contextPruning.mode: "aggressive"` — prune every turn
-- `contextPruning.mode: "cache-ttl"` + TTL expired — prune after cache expires
-
-Old messages are removed to reduce token cost, but this changes the prefix.
-
-**Scenario 3: Workspace Files Change**
-
-OpenClaw injects workspace files (AGENTS.md, MEMORY.md, etc.) into the system prompt:
-
-```
-Turn 1:
-[system: "...MEMORY.md content: 'User likes Python'..."] [msg1] [msg2]
-
-Turn 2 (after user edited MEMORY.md):
-[system: "...MEMORY.md content: 'User likes Python and Rust'..."] [msg1] [msg2] [msg3]
-         └──────────────────────────────────────────────────────┘
-                              System prompt changed!
-```
-
-**Trigger**: User edits any workspace file between turns (AGENTS.md, MEMORY.md, SOUL.md, etc.)
-
-Even though messages didn't change, the system prompt prefix is different.
-
-**Scenario 4: Tool Result Truncation**
-
-Long tool results are stored in full but may be truncated when reloaded for context:
-
-```
-Original tool result (stored in transcript):
-{"type":"tool_result","output":"... 50,000 characters of code ..."}
-
-Reloaded for next turn (truncated):
-{"type":"tool_result","output":"[first 1500 chars]...[truncated]...[last 1500 chars]"}
-```
-
-**Trigger**: `contextPruning.softTrim` or `hardClear` settings
+### Mitigation: `cache-ttl` Mode
 
 ```json
 {
   "contextPruning": {
-    "softTrim": {
-      "maxChars": 4000,
-      "headChars": 1500,
-      "tailChars": 1500
-    },
-    "hardClear": {
-      "enabled": true,
-      "placeholder": "[Old tool result cleared]"
-    }
+    "mode": "cache-ttl",
+    "ttl": "5m"
   }
 }
 ```
 
-The same transcript produces different message content on reload, breaking cache.
-
-**Mitigation: `contextPruning.mode: "cache-ttl"`**
-
-OpenClaw provides a `cache-ttl` mode that keeps the prefix stable within the cache TTL window:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "contextPruning": {
-        "mode": "cache-ttl",
-        "ttl": "5m"
-      }
-    }
-  }
-}
-```
-
-This defers context pruning until the cache TTL expires, maximizing cache hit rate while still managing context length over time.
-
-> **Summary:** The append-only transcript design is inherently cache-friendly, but compaction and pruning operations break cache continuity. The `cache-ttl` mode provides a balance between cost optimization (cache reuse) and context management.
-
-### 5. Session Reset (`src/config/sessions/reset.ts`)
-
-Handles session reset logic triggered by commands or idle timeout.
-
-```mermaid
-flowchart TB
-    subgraph Triggers["Reset Triggers"]
-        Cmd["/new or /reset command"]
-        Idle["Idle timeout<br/>(default: 60 min)"]
-        API["sessions.reset API"]
-    end
-    
-    subgraph Process["Reset Process"]
-        Check{Reset<br/>Allowed?}
-        NewId[Generate new sessionId]
-        NewFile[Create new transcript file]
-        Preserve[Preserve user preferences]
-        Clear[Clear token counters]
-        Save[Save to sessions.json]
-    end
-    
-    subgraph Preserved["Preserved Fields"]
-        P1[thinkingLevel]
-        P2[verboseLevel]
-        P3[modelOverride]
-        P4[sendPolicy]
-        P5[deliveryContext]
-    end
-    
-    subgraph Cleared["Cleared Fields"]
-        C1[sessionId → new UUID]
-        C2[sessionFile → new path]
-        C3[totalTokens → undefined]
-        C4[compactionCount → 0]
-    end
-    
-    Cmd --> Check
-    Idle --> Check
-    API --> Check
-    Check -->|Yes| NewId
-    NewId --> NewFile
-    NewFile --> Preserve
-    Preserve --> Clear
-    Clear --> Save
-    
-    Preserve -.-> Preserved
-    Clear -.-> Cleared
-```
-
-**Reset Behavior:**
-
-```typescript
-// Fields preserved on reset (user preferences stay)
-const PRESERVED_FIELDS = [
-  'thinkingLevel',
-  'verboseLevel', 
-  'sendPolicy',
-  'modelOverride',
-  'providerOverride',
-  'label',
-  'displayName',
-  'deliveryContext',
-  'lastChannel',
-  'lastTo',
-  'lastAccountId'
-];
-
-// Fields cleared on reset (conversation state resets)
-const CLEARED_FIELDS = [
-  'sessionId',        // Generate new UUID
-  'sessionFile',      // Point to new transcript
-  'totalTokens',
-  'inputTokens', 
-  'outputTokens',
-  'compactionCount',
-  'skillsSnapshot'
-];
-```
+Keeps prefix stable within TTL, maximizes cache hits.
 
 ---
 
-## Session Key System
+# Part 6: Security
 
-Session Key is the routing identifier for sessions, using a hierarchical structure.
+## 12. Access Control
 
-### Key Format Breakdown
-
-```
-agent:main:main
-  │    │    │
-  │    │    └── Session Identifier
-  │    │        • "main" = main session
-  │    │        • "telegram:123456" = Telegram user
-  │    │        • "cron:job-1" = Cron job
-  │    │        • "discord:group:789" = Discord group
-  │    │
-  │    └── Agent ID
-  │        • "main" = default agent
-  │        • "research" = custom research agent
-  │        • "code" = custom code agent
-  │
-  └── Prefix (literal)
-      Indicates this is an agent-scoped session
-```
-
-### Common Session Key Patterns
-
-**Group/Channel Sessions** (consistent format):
-
-```
-agent:{agentId}:{channel}:{peerKind}:{peerId}
-```
-
-| Type | Format | Example |
-|------|--------|---------|
-| Telegram Group | `agent:{agentId}:telegram:group:{chatId}` | `agent:main:telegram:group:-100123456` |
-| Telegram Forum Topic | `agent:{agentId}:telegram:group:{chatId}:topic:{topicId}` | `agent:main:telegram:group:-100123456:topic:42` |
-| Discord Channel | `agent:{agentId}:discord:channel:{channelId}` | `agent:main:discord:channel:123456789` |
-| Discord Group DM | `agent:{agentId}:discord:group:{channelId}` | `agent:main:discord:group:789` |
-| Cron Job | `agent:{agentId}:cron:{jobId}` | `agent:main:cron:daily-check` |
-| Cron Run | `agent:{agentId}:cron:{jobId}:run:{uuid}` | `agent:main:cron:daily-check:run:abc-123` |
-| Subagent | `agent:{agentId}:subagent:{label}:{uuid}` | `agent:main:subagent:researcher:def-456` |
-
-**DM Sessions** (depends on `dmScope` configuration):
-
-| dmScope | Format | Example |
-|---------|--------|---------|
-| `"main"` (default) | `agent:{agentId}:main` | `agent:main:main` |
-| `"per-peer"` | `agent:{agentId}:direct:{peerId}` | `agent:main:direct:123` |
-| `"per-channel-peer"` | `agent:{agentId}:{channel}:direct:{peerId}` | `agent:main:telegram:direct:123` |
-| `"per-account-channel-peer"` | `agent:{agentId}:{channel}:{accountId}:direct:{peerId}` | `agent:main:telegram:default:direct:123` |
-
-> **Important:** With default `dmScope: "main"`, all DMs across all channels route to the **same main session**. This allows seamless conversation continuity but means Telegram DMs and Discord DMs share context. If you need per-user isolation, configure `dmScope: "per-channel-peer"`.
-
-### Key Resolution Flow
-
-```mermaid
-flowchart TB
-    Start[Message Arrives] --> Extract[Extract Context]
-    
-    Extract --> Context["• channel (telegram/discord/...)<br/>• chatType (direct/group/channel)<br/>• senderId<br/>• groupId (if applicable)"]
-    
-    Context --> Agent[Determine Agent ID]
-    Agent --> AgentLogic{"Channel binding<br/>configured?"}
-    AgentLogic -->|Yes| BoundAgent[Use bound agentId]
-    AgentLogic -->|No| DefaultAgent[Use 'main']
-    
-    BoundAgent --> Build[Build Session Key]
-    DefaultAgent --> Build
-    
-    Build --> BuildLogic["buildAgentPeerSessionKey({<br/>  agentId,<br/>  channel,<br/>  peerId,<br/>  peerKind<br/>})"]
-    
-    BuildLogic --> Key["agent:main:telegram:group:-100123456"]
-    
-    Key --> Load[Load/Create SessionEntry]
-    Load --> Store[(sessions.json)]
-```
-
----
-
-## User Identification
-
-OpenClaw distinguishes between different users based on **unique identifiers provided by each communication channel**.
-
-### User Identifiers by Channel
-
-| Channel | User Identifier (peerId) | Example |
-|---------|-------------------------|---------|
-| Telegram | `msg.from.id` | `6813060849` |
-| Discord | `msg.author.id` | `123456789012345678` |
-| WhatsApp | Phone number (E.164) | `+8613800138000` |
-| Signal | Phone number | `+8613800138000` |
-| Slack | `user_id` | `U01ABC123` |
-| iMessage | Phone/Email | `+8613800138000` |
-| Webchat | Session cookie | `web-sess-abc123` |
-
-### How User Isolation Works
-
-```mermaid
-flowchart TB
-    subgraph Incoming["Incoming Messages"]
-        M1["Message from User A<br/>from.id = 6813060849"]
-        M2["Message from User B<br/>from.id = 1234567890"]
-    end
-    
-    subgraph KeyGen["Session Key Generation"]
-        K1["agent:main:telegram:6813060849"]
-        K2["agent:main:telegram:1234567890"]
-    end
-    
-    subgraph Sessions["Isolated Sessions"]
-        S1["Session A<br/>User A's conversation history"]
-        S2["Session B<br/>User B's conversation history"]
-    end
-    
-    M1 --> K1 --> S1
-    M2 --> K2 --> S2
-```
-
-### Code Example
-
-```typescript
-// src/routing/session-key.ts (simplified)
-function buildAgentPeerSessionKey(params: {
-  agentId: string,
-  channel: string,      // "telegram"
-  peerId: string | null,
-  peerKind: ChatType,   // "direct" | "group" | "channel"
-  dmScope?: "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer",
-}) {
-  // For DMs, routing depends on dmScope
-  if (peerKind === "direct") {
-    const dmScope = params.dmScope ?? "main";
-    if (dmScope === "main") {
-      return `agent:${agentId}:main`;  // All DMs share main session
-    }
-    if (dmScope === "per-channel-peer") {
-      return `agent:${agentId}:${channel}:direct:${peerId}`;
-    }
-    // ... other dmScope options
-  }
-  
-  // For groups/channels, include peerKind in the key
-  return `agent:${agentId}:${channel}:${peerKind}:${peerId}`;
-}
-
-// Examples:
-// DM (default):  "agent:main:main"
-// DM (per-channel-peer): "agent:main:telegram:direct:6813060849"
-// Group: "agent:main:telegram:group:-100123456"
-```
-
-> **Key Point:** With default `dmScope: "main"`, all DMs route to the same main session. For groups/channels, the session key includes the peerKind and peerId, providing automatic isolation per group.
-
----
-
-## Security and Access Control
-
-Since your bot is publicly accessible (anyone can message it), OpenClaw provides multiple security layers to control who can interact with it.
-
-### 1. Allowlist / Denylist (Recommended)
-
-Restrict which users can interact with your bot:
+### Allowlist/Denylist
 
 ```json
 {
   "telegram": {
-    "accounts": [{
-      "token": "YOUR_BOT_TOKEN",
-      "allowlist": ["6813060849"],    // Only these user IDs can interact
-      "denylist": ["987654321"]       // Or block specific users
-    }]
+    "allowlist": ["6813060849"],
+    "denylist": ["987654321"]
   }
 }
 ```
 
-### 2. DM Policy and Pairing
+### DM/Group Policies
 
-Configure how the bot handles DMs from unknown users:
+| Setting | Values |
+|---------|--------|
+| `dmPolicy` | `"pairing"`, `"allowlist"`, `"open"` |
+| `groupPolicy` | `"allowlist"`, `"mention"`, `"off"` |
 
-**dmPolicy Options:**
-
-| Value | Behavior |
-|-------|----------|
-| `"pairing"` | Unknown senders trigger pairing flow (secure, recommended) |
-| `"allowlist"` | Unknown senders silently ignored |
-| `"open"` | Anyone can DM (not recommended for public bots) |
+### Tool Security
 
 ```json
 {
-  "channels": {
-    "telegram": {
-      "dmPolicy": "pairing",
-      "groupPolicy": "allowlist"
+  "tools": {
+    "exec": {
+      "security": "allowlist",
+      "allowlist": ["ls", "cat", "git"]
     }
   }
 }
 ```
 
-**Pairing Flow (when `dmPolicy: "pairing"`):**
+---
+
+## 13. DM Pairing
+
+When `dmPolicy: "pairing"`:
 
 ```mermaid
 sequenceDiagram
-    participant S as Stranger
-    participant B as Bot
-    participant P as Pairing Store
-    participant O as Owner (CLI)
-    participant A as AllowFrom Store
-    
-    S->>B: Sends DM
-    B->>P: Generate pairing code
-    P-->>B: Code: PAIRME12
-    B->>S: "Pairing code: PAIRME12<br/>Run: openclaw pairing approve telegram PAIRME12"
-    
-    Note over O: Owner runs CLI command
-    O->>A: openclaw pairing approve telegram PAIRME12
-    A-->>O: User added to allowlist
-    
-    S->>B: Sends another DM
-    B->>A: Check allowlist
-    A-->>B: User allowed
-    B->>S: Normal response
+    Stranger->>Bot: Sends DM
+    Bot->>Stranger: "Pairing code: PAIRME12"
+    Note over Owner: Run CLI command
+    Owner->>CLI: openclaw pairing approve telegram PAIRME12
+    Stranger->>Bot: Sends another DM
+    Bot->>Stranger: Normal response ✓
 ```
-
-**Step-by-step:**
-
-1. **Stranger sends DM** to your bot
-2. **Bot returns pairing info:**
-   ```
-   👋 Hi! I don't recognize you yet.
-   
-   Your Telegram user id: 6813060849
-   Pairing code: PAIRME12
-   
-   To connect, run on your machine:
-   openclaw pairing approve telegram PAIRME12
-   ```
-3. **Owner approves** on local machine:
-   ```bash
-   openclaw pairing approve telegram PAIRME12
-   ```
-4. **User added to allowlist** - stored in `~/.openclaw/credentials/telegram-allowFrom.json`
-5. **Future DMs work normally**
-
-**Pairing CLI Commands:**
-
-```bash
-# List pending pairing requests
-openclaw pairing list telegram
-
-# Approve a pairing request
-openclaw pairing approve telegram PAIRME12
-
-# Related files
-~/.openclaw/credentials/telegram-pairing.json    # Pending requests
-~/.openclaw/credentials/telegram-allowFrom.json  # Approved users
-```
-
-### 3. Group Activation Modes
-
-| Mode | Behavior |
-|------|----------|
-| `"always"` | Respond to all messages in the group |
-| `"mention"` | Only respond when @mentioned |
-| `"off"` | Ignore all group messages |
-
-### 4. Send Policy
-
-Control whether the agent can proactively send messages:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "sendPolicy": "deny"    // Prevent agent from sending unsolicited messages
-    }
-  }
-}
-```
-
-### 5. Tool Execution Security
-
-Restrict which shell commands the agent can execute:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "tools": {
-        "exec": {
-          "security": "allowlist",
-          "allowlist": ["ls", "cat", "git", "npm"]
-        }
-      }
-    }
-  }
-}
-```
-
-### 6. Sandbox Mode
-
-Run tool executions in an isolated sandbox:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "sandbox": {
-        "enabled": true
-      }
-    }
-  }
-}
-```
-
-### Complete Security Configuration Example
-
-```json
-{
-  "telegram": {
-    "accounts": [{
-      "token": "YOUR_BOT_TOKEN",
-      "allowlist": ["6813060849"],     // ✅ Only you
-      "dm": "allowlist",               // ✅ DMs restricted to allowlist
-      "dmAllowlist": ["6813060849"],
-      "groups": "off"                  // ✅ Disable group responses entirely
-    }]
-  },
-  "agents": {
-    "defaults": {
-      "sendPolicy": "deny",            // ✅ No unsolicited messages
-      "sandbox": { "enabled": true },  // ✅ Sandboxed execution
-      "tools": {
-        "exec": {
-          "security": "allowlist",     // ✅ Restricted commands
-          "allowlist": ["ls", "cat", "git"]
-        }
-      }
-    }
-  }
-}
-```
-
-### Security Level Comparison
-
-| Configuration | What strangers can do |
-|--------------|----------------------|
-| No config (default) | ⚠️ Can chat, but tools are limited |
-| `allowlist: [yourId]` | ✅ Cannot interact at all |
-| `dm: "off"` | ✅ DMs are ignored |
-| `groups: "mention"` | Must @mention to trigger response |
-| `sendPolicy: "deny"` | Agent cannot send first |
-| `sandbox: true` | Tools run in isolation |
-
-```mermaid
-flowchart TB
-    subgraph Security["Security Layers"]
-        L1["Layer 1: Allowlist/Denylist<br/>Who can message?"]
-        L2["Layer 2: DM/Group Policies<br/>Where to respond?"]
-        L3["Layer 3: Send Policy<br/>Can agent initiate?"]
-        L4["Layer 4: Tool Security<br/>What can agent execute?"]
-        L5["Layer 5: Sandbox<br/>Isolated execution?"]
-    end
-    
-    Msg[Incoming Message] --> L1
-    L1 -->|Allowed| L2
-    L1 -->|Denied| Block1[Ignored]
-    L2 -->|Allowed| Process[Process Message]
-    L2 -->|Denied| Block2[Ignored]
-    Process --> Agent[Agent Response]
-    Agent --> L3
-    L3 -->|Check| L4
-    L4 -->|Check| L5
-    L5 --> Execute[Safe Execution]
-```
-
-> **Recommendation:** For personal use, always configure `allowlist` with only your user ID to ensure complete control over your bot. 🔐
 
 ---
 
-## Multi-Agent Configuration
+# Part 7: Advanced Topics
 
-OpenClaw supports multiple agents, each with its own workspace, model configuration, and sessions.
-
-### Configuring Multiple Agents
-
-In `openclaw.json`:
+## 14. Multi-Agent Configuration
 
 ```json
 {
   "agents": {
     "agents": [
-      {
-        "id": "research",
-        "name": "Research Agent",
-        "workspace": "~/.openclaw/workspace-research",
-        "model": "anthropic/claude-sonnet-4-5"
-      },
-      {
-        "id": "code",
-        "name": "Code Agent", 
-        "workspace": "~/.openclaw/workspace-code",
-        "model": "anthropic/claude-sonnet-4-5"
-      }
+      { "id": "research", "workspace": "~/research" },
+      { "id": "code", "workspace": "~/code" }
     ]
   }
 }
 ```
 
-### Invoking Different Agents
-
-```mermaid
-flowchart TB
-    subgraph Methods["Invocation Methods"]
-        CLI["1. CLI --agent flag"]
-        Binding["2. Channel Binding"]
-        Inter["3. Inter-agent calls"]
-        Cron["4. Cron agentId"]
-    end
-    
-    subgraph Agents["Agents"]
-        Main[agent:main]
-        Research[agent:research]
-        Code[agent:code]
-    end
-    
-    CLI -->|"--agent research"| Research
-    Binding -->|"chatId binding"| Code
-    Inter -->|"sessions_send()"| Research
-    Cron -->|"agentId: code"| Code
-```
-
-#### Method 1: CLI `--agent` Flag
-
-```bash
-# Invoke research agent directly
-openclaw agent --agent research --message "Research topic X"
-
-# Invoke code agent
-openclaw agent --agent code --message "Write a function"
-
-# Or use session-id
-openclaw agent --session-id agent:research:main --message "..."
-```
-
-#### Method 2: Channel Binding
-
-Route specific chats to specific agents:
-
-```json
-{
-  "telegram": {
-    "accounts": [{
-      "id": "my-bot",
-      "token": "...",
-      "bindings": [
-        { "chatId": "-100111111", "agentId": "research" },
-        { "chatId": "-100222222", "agentId": "code" }
-      ]
-    }]
-  }
-}
-```
-
-#### Method 3: Inter-Agent Communication
-
-Agents can communicate with each other:
-
-```typescript
-// Send message to another agent's session
-sessions_send({
-  sessionKey: "agent:research:main",
-  message: "Please research this topic"
-});
-
-// Spawn a sub-agent task
-sessions_spawn({
-  agentId: "research",
-  task: "Research and summarize topic X"
-});
-```
-
-#### Method 4: Cron Job Agent Assignment
-
-```json
-{
-  "cron": {
-    "jobs": [{
-      "id": "daily-research",
-      "agentId": "research",
-      "schedule": { "kind": "cron", "expr": "0 9 * * *" },
-      "sessionTarget": "isolated",
-      "payload": {
-        "kind": "agentTurn",
-        "message": "Generate daily research report"
-      }
-    }]
-  }
-}
-```
+Each agent has its own:
+- Workspace directory
+- Session pool
+- Model configuration
 
 ---
 
-## Message Flow and Collaboration
+## 15. User Identification
 
-### Single Request Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Channel as Channel Handler
-    participant Router as Session Router
-    participant Queue as Message Queue
-    participant Agent as Agent Runner
-    participant LLM as LLM Provider
-    participant Store as Session Store
-    
-    User->>Channel: Send message
-    Channel->>Router: Route message
-    Router->>Router: Build sessionKey
-    Router->>Store: Load SessionEntry
-    Store-->>Router: SessionEntry
-    Router->>Queue: Enqueue message
-    Queue->>Agent: Dequeue & execute
-    Agent->>Agent: Load transcript
-    Agent->>Agent: Build system prompt
-    Agent->>Agent: Check token budget
-    Agent->>LLM: Call API
-    LLM-->>Agent: Response
-    Agent->>Store: Update SessionEntry
-    Agent->>Store: Append to transcript
-    Agent->>Channel: Send response
-    Channel->>User: Deliver message
-```
-
-### Multi-Session Collaboration Scenarios
-
-#### Scenario 1: Subagent Invocation
-
-```mermaid
-sequenceDiagram
-    participant Main as Main Session
-    participant Spawn as sessions_spawn()
-    participant Sub as Subagent Session
-    participant Announce as Announce Flow
-    
-    Main->>Spawn: Spawn subagent task
-    Spawn->>Sub: Create isolated session
-    Sub->>Sub: Execute task
-    Sub->>Sub: Generate result
-    Sub->>Announce: Send result
-    Announce->>Main: Deliver announcement
-    Main->>Main: Continue conversation
-```
-
-#### Scenario 2: Cron Isolated Session
-
-```mermaid
-sequenceDiagram
-    participant Timer as Cron Timer
-    participant Cron as Cron Session
-    participant Agent as Agent Runner
-    participant Main as Main Session
-    
-    Timer->>Cron: Trigger job
-    Cron->>Agent: Execute agentTurn
-    Agent->>Agent: Run in isolation
-    Agent-->>Cron: Result
-    Cron->>Main: Announce summary (optional)
-    Note over Cron: Session cleaned up<br/>after retention period
-```
-
-#### Scenario 3: Cross-Agent Communication
-
-```mermaid
-sequenceDiagram
-    participant A as Agent: main
-    participant Send as sessions_send()
-    participant B as Agent: research
-    participant C as Agent: code
-    
-    A->>Send: Request research
-    Send->>B: Deliver message
-    B->>B: Process request
-    B->>Send: Request code
-    Send->>C: Deliver message
-    C->>C: Generate code
-    C-->>B: Return result
-    B-->>A: Return research + code
-```
+| Channel | Identifier |
+|---------|------------|
+| Telegram | `msg.from.id` |
+| Discord | `msg.author.id` |
+| WhatsApp | Phone (E.164) |
+| Signal | Phone |
+| Slack | `user_id` |
 
 ---
 
-## Token Management
-
-### Token Statistics Fields
-
-```typescript
-interface SessionEntry {
-  inputTokens?: number;      // Cumulative input tokens
-  outputTokens?: number;     // Cumulative output tokens
-  totalTokens?: number;      // Current context tokens (estimated)
-  totalTokensFresh?: boolean;// Whether it's up-to-date
-  contextTokens?: number;    // Model context window size
-}
-```
-
-### Token Calculation Flow
-
-```mermaid
-flowchart TB
-    Start[Agent Turn Starts] --> Load[Load history messages]
-    Load --> Estimate["Estimate tokens:<br/>messages + system prompt + new message"]
-    Estimate --> Check{Exceeds<br/>threshold?}
-    Check -->|Yes| Compact[Trigger Compaction]
-    Check -->|No| Call[Call LLM]
-    Compact --> Call
-    Call --> Usage[Get usage from response]
-    Usage --> Update["Update SessionEntry:<br/>• inputTokens += usage.input<br/>• outputTokens += usage.output<br/>• totalTokens = derived value<br/>• totalTokensFresh = true"]
-    Update --> Save[Persist to sessions.json]
-```
-
-### Compaction (Context Compression)
-
-```mermaid
-flowchart LR
-    subgraph Before["Before Compaction"]
-        M1[Msg 1]
-        M2[Msg 2]
-        M3[Msg 3]
-        M4[Msg 4]
-        M5[Msg 5]
-        M6[Msg 6]
-    end
-    
-    subgraph Process["Compaction"]
-        Split[Split into chunks]
-        Sum1[Summarize chunk 1]
-        Sum2[Summarize chunk 2]
-        Merge[Merge summaries]
-    end
-    
-    subgraph After["After Compaction"]
-        Summary[Combined Summary]
-        M5b[Msg 5]
-        M6b[Msg 6]
-    end
-    
-    Before --> Split
-    Split --> Sum1 & Sum2
-    Sum1 & Sum2 --> Merge
-    Merge --> After
-```
-
-**Compaction Strategies:**
-
-| Strategy | Description | Configuration |
-|----------|-------------|---------------|
-| Auto | Automatically triggers when context approaches limit | Default |
-| Manual | Manually trigger via /compact command | - |
-| Disabled | Disable compression, error on overflow | `compaction.enabled: false` |
-
----
-
-## Cache Management
-
-OpenClaw supports multi-layer cache strategies to optimize token usage and response latency.
-
-### 1. Provider-Level Prompt Caching
-
-```mermaid
-flowchart TB
-    subgraph Prompt["Prompt Structure"]
-        subgraph Static["Static Prefix (Cacheable)"]
-            SP[System Prompt]
-            WF[Workspace Files]
-            SK[Skills]
-        end
-        
-        subgraph Dynamic["Dynamic Suffix"]
-            HI[Conversation History]
-            UM[User Message]
-        end
-    end
-    
-    Static -->|cache_control breakpoint| Cache[(Provider Cache)]
-    Cache -->|Cache hit| Fast[Fast response<br/>10x cheaper]
-    Dynamic --> LLM[LLM Processing]
-```
-
-**Provider Cache Methods:**
-
-| Provider | Cache Method | Configuration |
-|----------|-------------|---------------|
-| Anthropic Direct | `cacheRetention` parameter | `cacheRetention: "short"/"long"` |
-| OpenRouter + Anthropic | `cache_control` blocks | Automatic |
-| OpenAI | Automatic (no config needed) | - |
-| DeepSeek | Automatic (no config needed) | - |
-| Gemini 2.5+ | Automatic (no config needed) | - |
-
-### 2. Session Store Cache
-
-```mermaid
-flowchart LR
-    Request[Load Session] --> CacheCheck{Cache<br/>Valid?}
-    CacheCheck -->|Yes| Return[Return from cache]
-    CacheCheck -->|No| ReadFile[Read sessions.json]
-    ReadFile --> UpdateCache[Update cache]
-    UpdateCache --> Return
-    
-    Write[Write Session] --> AcquireLock[Acquire file lock]
-    AcquireLock --> WriteFile[Write sessions.json]
-    WriteFile --> Invalidate[Invalidate cache]
-```
-
-### Cache Optimization Configuration
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "contextPruning": {
-        "mode": "cache-ttl",
-        "ttl": "5m"
-      },
-      "models": {
-        "anthropic/claude-sonnet-4-5": {
-          "params": {
-            "cacheRetention": "long"
-          }
-        }
-      }
-    }
-  },
-  "heartbeat": {
-    "every": "55m"
-  }
-}
-```
-
----
-
-## Session Lifecycle
+## 16. Session Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created: New message arrives
+    [*] --> Created: New message
     Created --> Active: Session initialized
     Active --> Active: Messages exchanged
-    Active --> Compacted: Context limit reached
-    Compacted --> Active: Continue conversation
-    Active --> Reset: /new or /reset command
-    Active --> Reset: Idle timeout
-    Active --> Deleted: sessions.delete
+    Active --> Compacted: Context limit
+    Compacted --> Active: Continue
+    Active --> Reset: /new or idle timeout
     Reset --> Active: New conversation
+    Active --> Deleted: sessions.delete
     Deleted --> [*]
 ```
 
-### Reset Triggers
+---
 
-| Trigger | Condition | Behavior |
-|---------|-----------|----------|
-| User command | `/new`, `/reset` | Immediate reset |
-| Idle timeout | Exceeds `idleMinutes` without activity | Reset on next message |
-| Manual delete | `sessions.delete` | Delete entry + archive transcript |
-| Cron cleanup | `sessionRetention` expired | Clean up isolated cron sessions |
+# Appendices
+
+## Appendix A: Sequence Diagram Step-by-Step
+
+### Phase 1: Message Routing (Steps 1-5)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 1 | User sends message | Raw message via webhook/polling |
+| 2 | `buildTelegramMessageContext()` | Extract metadata |
+| 3 | `resolveAgentRoute()` | Determine agent |
+| 4 | `buildAgentPeerSessionKey()` | Construct session key |
+| 5 | Return route | Ready for session loading |
+
+### Phase 2: Session State Loading (Steps 6-10)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 6 | `loadSessionStore()` | Entry point |
+| 7 | Check cache | 45s TTL |
+| 8 | Read `sessions.json` | On cache miss |
+| 9 | Update cache | Store in memory |
+| 10 | Return `SessionEntry` | Metadata loaded |
+
+### Phase 3: Prepare Agent (Steps 11-15)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 11 | `getReplyFromConfig()` | Main entry |
+| 12 | `initSessionState()` | Initialize state |
+| 13 | `resolveReplyDirectives()` | Parse `/think`, `/model` |
+| 14 | `runPreparedReply()` | Prepare context |
+| 15 | `runEmbeddedPiAgent()` | Call agent |
+
+### Phase 4: Load History (Steps 16-24)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 16 | `acquireSessionWriteLock()` | Lock file |
+| 17 | `SessionManager.open()` | Open transcript |
+| 18 | Read `.jsonl` | Parse messages |
+| 19-21 | `buildSessionContext()` | Filter by compaction |
+| 22 | `sanitizeSessionHistory()` | Clean messages |
+| 23 | `limitHistoryTurns()` | Truncate |
+| 24 | `replaceMessages()` | Apply to agent |
+
+### Phase 5: LLM Invocation (Steps 25-32)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 25 | `createAgentSession()` | Init LLM connection |
+| 26 | `applySystemPromptOverride()` | Inject workspace files |
+| 27 | `activeSession.prompt()` | Call LLM |
+| 28 | Streaming loop | Process chunks |
+| 29-31 | Tool use | Execute tools, return results |
+| 32 | Final response | Get usage stats |
+
+### Phase 6: Persist (Steps 33-40)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 33-34 | `appendMessage()` | Write to transcript |
+| 35-36 | Compaction (optional) | If needed |
+| 37-40 | `updateSessionStore()` | Update metadata |
+
+### Phase 7: Deliver (Steps 41-43)
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 41-42 | Return result | To reply handler |
+| 43 | Send response | Via Telegram API |
 
 ---
 
-## Related Files
+## Appendix B: Related Source Files
 
-| Module | File Path | Description |
-|--------|-----------|-------------|
-| Session Types | `src/config/sessions/types.ts` | Type definitions |
-| Session Store | `src/config/sessions/store.ts` | Storage management |
-| Session Key | `src/routing/session-key.ts` | Key parsing and building |
-| Transcript | `src/config/sessions/transcript.ts` | Conversation history management |
-| Reset Logic | `src/config/sessions/reset.ts` | Reset logic |
-| Compaction | `src/agents/compaction.ts` | Context compression |
-| Context Pruning | `src/agents/pi-extensions/context-pruning.ts` | Context pruning |
-| Cache TTL | `src/agents/pi-embedded-runner/cache-ttl.ts` | Cache tracking |
-| Gateway Session Utils | `src/gateway/session-utils.ts` | Gateway layer utilities |
+| Module | Path |
+|--------|------|
+| Session Types | `src/config/sessions/types.ts` |
+| Session Store | `src/config/sessions/store.ts` |
+| Session Key | `src/routing/session-key.ts` |
+| Transcript | `src/config/sessions/transcript.ts` |
+| Reset | `src/config/sessions/reset.ts` |
+| Compaction | `src/agents/compaction.ts` |
+| Context Pruning | `src/agents/pi-extensions/context-pruning.ts` |
+| Cache TTL | `src/agents/pi-embedded-runner/cache-ttl.ts` |
 
 ---
 
-## References
+## Appendix C: References
 
 - [OpenClaw Docs: Session Management](https://docs.openclaw.ai/concepts/session)
 - [OpenClaw Docs: Compaction](https://docs.openclaw.ai/concepts/compaction)
 - [OpenClaw Docs: Token Use](https://docs.openclaw.ai/token-use)
-
----
-
-## Appendix A: Sequence Diagram Step-by-Step Reference
-
-This appendix explains each numbered step in the Landscape sequence diagram.
-
-### Phase 1: Message Routing
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **1** | User sends message | Raw message arrives via Telegram/Discord/etc. webhook or polling |
-| **2** | `buildTelegramMessageContext()` | Extracts message metadata: sender ID, chat ID, message text, media attachments, reply context, forum thread ID |
-| **3** | `resolveAgentRoute({cfg, channel, peer})` | Determines which agent handles this message based on channel bindings config |
-| **4** | `buildAgentPeerSessionKey()` | Constructs session key from agentId + channel + peerKind + peerId (e.g., `agent:main:telegram:group:-100123456`) |
-| **5** | Return `{sessionKey, agentId, ...}` | Route resolution complete, ready to load session state |
-
-### Phase 2: Session State Loading
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **6** | `loadSessionStore(storePath)` | Entry point to load session metadata |
-| **7** | Check in-memory cache (TTL: 45s) | Performance optimization - avoid disk read if data is fresh |
-| **8** | [Cache Miss] Read `sessions.json` | Parse the entire session store file from disk |
-| **9** | Update cache | Store parsed data in memory for subsequent requests |
-| **10** | Return `SessionEntry` | Returns metadata: `{sessionId, sessionFile, inputTokens, modelOverride, thinkingLevel, ...}` |
-
-### Phase 3: Prepare Agent Execution
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **11** | `getReplyFromConfig(ctx, opts)` | Main entry point for reply processing |
-| **12** | `initSessionState()` | Initialize runtime state: check idle timeout, apply overrides, resolve delivery context |
-| **13** | `resolveReplyDirectives()` | Parse inline commands (`/think high`, `/model sonnet`) from user message, strip them from body |
-| **14** | `runPreparedReply()` | Assemble execution context: resolve session file path, build system prompt, prepare tools, handle group intro |
-| **15** | `runEmbeddedPiAgent({sessionFile, prompt, ...})` | Call into the agent execution layer with all prepared parameters |
-
-### Phase 4: Load Conversation History
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **16** | `acquireSessionWriteLock()` | Obtain exclusive lock on session file to prevent concurrent writes |
-| **17** | `SessionManager.open(sessionFile)` | Open the transcript `.jsonl` file for reading |
-| **18** | Read `.jsonl` (JSONL parse) | Parse each line as JSON, extract messages and metadata |
-| **19** | Return `messages[], compaction markers` | Raw message history with compaction boundaries |
-| **20** | `buildSessionContext()` | Filter messages based on compaction markers (skip pre-compaction messages) |
-| **21** | Return `{messages, sessionId}` | Processed message history ready for sanitization |
-| **22** | `sanitizeSessionHistory()` | Clean up messages: validate turn order, repair tool_use/tool_result pairing |
-| **23** | `limitHistoryTurns()` | Truncate history to configured DM history limit |
-| **24** | `replaceMessages(sanitized)` | Replace agent's message buffer with sanitized history |
-
-### Phase 5: LLM Invocation
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **25** | `createAgentSession()` | Initialize LLM connection with model, tools, settings |
-| **26** | `applySystemPromptOverride()` | Inject system prompt: workspace files (AGENTS.md, MEMORY.md), skills, extra context |
-| **27** | `activeSession.prompt(userMessage)` | Send user message to LLM, begin streaming response |
-| **28** | Streaming loop | Process response chunks: tokens → `onPartialReply()`, complete blocks → `onBlockReply()` |
-| **29** | [Tool Use] `tool_use` request | LLM requests tool execution (e.g., `exec`, `read`, `write`) |
-| **30** | Execute tool | Run the requested tool, capture output |
-| **31** | Send `tool_result` | Return tool output to LLM for continued processing |
-| **32** | Final response + usage stats | LLM completes response, returns token usage statistics |
-
-### Phase 6: Persist & Update
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **33** | `sessionManager.appendMessage()` | Append assistant response to transcript `.jsonl` file |
-| **34** | Append to `.jsonl` | Write new JSONL line(s) to disk |
-| **35** | [Optional] `appendCacheTtlTimestamp()` | Record cache TTL marker for context pruning (if `cache-ttl` mode) |
-| **36** | [Optional] `prepareCompaction()` | If context exceeds limit, generate summary and append compaction marker |
-| **37** | `updateSessionStore()` | Update session metadata (token counts, timestamps) |
-| **38** | Acquire file lock | Obtain exclusive lock on `sessions.json` |
-| **39** | Write `sessions.json` | Persist updated session metadata to disk |
-| **40** | Invalidate cache | Clear in-memory cache to force fresh read on next access |
-
-### Phase 7: Deliver Response
-
-| Step | Function | What it does |
-|------|----------|--------------|
-| **41** | Return `{assistantText, usage, ...}` | Agent execution complete, return results to reply handler |
-| **42** | Return `ReplyPayload` | Format response for channel delivery |
-| **43** | Send response (Telegram API) | Deliver formatted message to user via channel API |
-
-### Quick Reference: Key Data Transformations
-
-```
-User Message
-     │
-     ▼ [Step 2-5]
-peer = {kind: "group", id: "-100123456"}
-sessionKey = "agent:main:telegram:group:-100123456"
-     │
-     ▼ [Step 6-10]
-SessionEntry = {sessionId: "abc-123", sessionFile: "abc-123.jsonl", ...}
-     │
-     ▼ [Step 11-15]
-ExecutionParams = {prompt: "cleaned message", thinkLevel: "high", ...}
-     │
-     ▼ [Step 16-24]
-messages = [{role: "user", ...}, {role: "assistant", ...}, ...]  // sanitized history
-     │
-     ▼ [Step 25-32]
-LLM Response = {text: "...", usage: {input: 1000, output: 500}}
-     │
-     ▼ [Step 33-43]
-User sees response in Telegram/Discord/etc.
-```
