@@ -126,6 +126,137 @@ sequenceDiagram
     Channel->>User: Send response (Telegram API)
 ```
 
+### Phase 3 Deep Dive: Prepare Agent Execution
+
+This phase involves three key functions that transform user input into an agent-ready request:
+
+#### 1. `resolveReplyDirectives()` — Parse Inline Commands
+
+**Location:** `auto-reply/reply/get-reply-directives.ts`
+
+Scans the user message for **inline directives** (slash commands) and extracts settings:
+
+```
+User message: "帮我写个脚本 /think high /model sonnet"
+                              │           │
+                              ▼           ▼
+                    thinkLevel="high"  model="sonnet"
+```
+
+**Supported directives:**
+
+| Directive | Effect | Example |
+|-----------|--------|---------|
+| `/think <level>` | Set thinking depth | `/think high`, `/think off` |
+| `/model <name>` | Switch model | `/model sonnet`, `/model gpt-4o` |
+| `/verbose` | Show tool outputs | `/verbose on` |
+| `/elevated` | Enable elevated mode | `/elevated on` |
+| `/reasoning` | Enable reasoning display | `/reasoning stream` |
+
+**Output:** `InlineDirectives` object + cleaned message body (directives stripped)
+
+#### 2. `runPreparedReply()` — Prepare Execution Context
+
+**Location:** `auto-reply/reply/get-reply-run.ts`
+
+Assembles all the pieces needed for agent execution:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  runPreparedReply()                     │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Inputs:                                                │
+│  • User message (cleaned)                              │
+│  • Parsed directives (think level, model, etc.)        │
+│  • Session state (from initSessionState)               │
+│  • Config (agents, workspace, tools)                   │
+│                                                         │
+│  Processing:                                            │
+│  ├─ Resolve session file path                          │
+│  ├─ Build system prompt (workspace files + context)    │
+│  ├─ Prepare tool definitions                           │
+│  ├─ Handle group chat intro (if needed)                │
+│  ├─ Check idle timeout → trigger reset if needed       │
+│  ├─ Inject system events (pending notifications)       │
+│  └─ Ensure skill snapshot                              │
+│                                                         │
+│  Output: Ready to call runEmbeddedPiAgent()            │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key tasks:**
+- `resolveSessionFilePath()` — Locate the transcript `.jsonl` file
+- `buildInboundMetaSystemPrompt()` — Add message metadata to system prompt
+- `buildGroupIntro()` — Inject group chat context for first message
+- `prependSystemEvents()` — Add pending system notifications to prompt
+- `ensureSkillSnapshot()` — Cache skill definitions for the session
+
+#### 3. `runEmbeddedPiAgent()` — Execute Agent
+
+**Location:** `agents/pi-embedded-runner/run.ts`
+
+The main entry point for agent execution:
+
+```
+runEmbeddedPiAgent({
+  sessionFile: "~/.openclaw/agents/main/sessions/abc-123.jsonl",
+  prompt: "帮我写个脚本",           // cleaned user message
+  thinkLevel: "high",               // from directives
+  provider: "anthropic",            // resolved model
+  modelId: "claude-sonnet-4-5",
+  workspaceDir: "/Users/user/clawd",
+  timeoutMs: 300000,
+  ...
+})
+```
+
+**Internally calls `runEmbeddedAttempt()`** which:
+
+1. **Acquire session lock** — Prevent concurrent writes
+2. **Load transcript** — `SessionManager.open(sessionFile)`
+3. **Sanitize history** — `sanitizeSessionHistory()`, `limitHistoryTurns()`
+4. **Create agent session** — Initialize LLM connection
+5. **Apply system prompt** — Inject workspace files, skills, context
+6. **Execute prompt** — `activeSession.prompt(userMessage)`
+7. **Handle streaming** — Process tokens, tool calls, responses
+8. **Persist results** — Append to transcript, update session store
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              runEmbeddedPiAgent() Flow                  │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌─────────────┐                                        │
+│  │ Session Lock │◄── acquireSessionWriteLock()         │
+│  └──────┬──────┘                                        │
+│         │                                               │
+│         ▼                                               │
+│  ┌─────────────┐                                        │
+│  │ Load History│◄── SessionManager.open()              │
+│  └──────┬──────┘    sanitizeSessionHistory()           │
+│         │                                               │
+│         ▼                                               │
+│  ┌─────────────┐                                        │
+│  │ Create Agent│◄── createAgentSession()               │
+│  └──────┬──────┘    applySystemPromptOverride()        │
+│         │                                               │
+│         ▼                                               │
+│  ┌─────────────┐    ┌─────────────────────┐            │
+│  │ Execute     │───►│ LLM API (streaming) │            │
+│  │ Prompt      │◄───│ tokens, tool_use    │            │
+│  └──────┬──────┘    └─────────────────────┘            │
+│         │                                               │
+│         ▼                                               │
+│  ┌─────────────┐                                        │
+│  │ Persist     │◄── appendMessage()                    │
+│  │ Results     │    updateSessionStore()               │
+│  └─────────────┘                                        │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
 ### Key Modules Reference
 
 | Phase | Module | Key Functions |
