@@ -13,11 +13,13 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 2. [Session Architecture](#session-architecture)
 3. [Core Modules](#core-modules)
 4. [Session Key System](#session-key-system)
-5. [Multi-Agent Configuration](#multi-agent-configuration)
-6. [Message Flow and Collaboration](#message-flow-and-collaboration)
-7. [Token Management](#token-management)
-8. [Cache Management](#cache-management)
-9. [Session Lifecycle](#session-lifecycle)
+5. [User Identification](#user-identification)
+6. [Security and Access Control](#security-and-access-control)
+7. [Multi-Agent Configuration](#multi-agent-configuration)
+8. [Message Flow and Collaboration](#message-flow-and-collaboration)
+9. [Token Management](#token-management)
+10. [Cache Management](#cache-management)
+11. [Session Lifecycle](#session-lifecycle)
 
 ---
 
@@ -466,6 +468,226 @@ flowchart TB
     Key --> Load[Load/Create SessionEntry]
     Load --> Store[(sessions.json)]
 ```
+
+---
+
+## User Identification
+
+OpenClaw distinguishes between different users based on **unique identifiers provided by each communication channel**.
+
+### User Identifiers by Channel
+
+| Channel | User Identifier (peerId) | Example |
+|---------|-------------------------|---------|
+| Telegram | `msg.from.id` | `6813060849` |
+| Discord | `msg.author.id` | `123456789012345678` |
+| WhatsApp | Phone number (E.164) | `+8613800138000` |
+| Signal | Phone number | `+8613800138000` |
+| Slack | `user_id` | `U01ABC123` |
+| iMessage | Phone/Email | `+8613800138000` |
+| Webchat | Session cookie | `web-sess-abc123` |
+
+### How User Isolation Works
+
+```mermaid
+flowchart TB
+    subgraph Incoming["Incoming Messages"]
+        M1["Message from User A<br/>from.id = 6813060849"]
+        M2["Message from User B<br/>from.id = 1234567890"]
+    end
+    
+    subgraph KeyGen["Session Key Generation"]
+        K1["agent:main:telegram:6813060849"]
+        K2["agent:main:telegram:1234567890"]
+    end
+    
+    subgraph Sessions["Isolated Sessions"]
+        S1["Session A<br/>User A's conversation history"]
+        S2["Session B<br/>User B's conversation history"]
+    end
+    
+    M1 --> K1 --> S1
+    M2 --> K2 --> S2
+```
+
+### Code Example
+
+```typescript
+// src/routing/session-key.ts
+function buildAgentPeerSessionKey(params: {
+  agentId: string,
+  channel: string,      // "telegram"
+  peerId: string,       // "6813060849" ← User ID from channel
+  peerKind: ChatType,   // "direct"
+}) {
+  // User ID becomes part of the session key
+  return `agent:${agentId}:${channel}:${peerId}`;
+}
+
+// Result: "agent:main:telegram:6813060849"
+// Each user gets their own unique session key
+```
+
+> **Key Point:** The channel provides the user ID → it becomes part of the Session Key → different users are automatically isolated into separate sessions.
+
+---
+
+## Security and Access Control
+
+Since your bot is publicly accessible (anyone can message it), OpenClaw provides multiple security layers to control who can interact with it.
+
+### 1. Allowlist / Denylist (Recommended)
+
+Restrict which users can interact with your bot:
+
+```json
+{
+  "telegram": {
+    "accounts": [{
+      "token": "YOUR_BOT_TOKEN",
+      "allowlist": ["6813060849"],    // Only these user IDs can interact
+      "denylist": ["987654321"]       // Or block specific users
+    }]
+  }
+}
+```
+
+### 2. DM vs Group Permission Separation
+
+Configure different policies for private chats and groups:
+
+```json
+{
+  "telegram": {
+    "accounts": [{
+      "token": "...",
+      "dm": "allowlist",              // DMs: only allowlisted users
+      "dmAllowlist": ["6813060849"],
+      "groups": "mention"             // Groups: only respond when @mentioned
+    }]
+  }
+}
+```
+
+### 3. Group Activation Modes
+
+| Mode | Behavior |
+|------|----------|
+| `"always"` | Respond to all messages in the group |
+| `"mention"` | Only respond when @mentioned |
+| `"off"` | Ignore all group messages |
+
+### 4. Send Policy
+
+Control whether the agent can proactively send messages:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "sendPolicy": "deny"    // Prevent agent from sending unsolicited messages
+    }
+  }
+}
+```
+
+### 5. Tool Execution Security
+
+Restrict which shell commands the agent can execute:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "tools": {
+        "exec": {
+          "security": "allowlist",
+          "allowlist": ["ls", "cat", "git", "npm"]
+        }
+      }
+    }
+  }
+}
+```
+
+### 6. Sandbox Mode
+
+Run tool executions in an isolated sandbox:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+### Complete Security Configuration Example
+
+```json
+{
+  "telegram": {
+    "accounts": [{
+      "token": "YOUR_BOT_TOKEN",
+      "allowlist": ["6813060849"],     // ✅ Only you
+      "dm": "allowlist",               // ✅ DMs restricted to allowlist
+      "dmAllowlist": ["6813060849"],
+      "groups": "off"                  // ✅ Disable group responses entirely
+    }]
+  },
+  "agents": {
+    "defaults": {
+      "sendPolicy": "deny",            // ✅ No unsolicited messages
+      "sandbox": { "enabled": true },  // ✅ Sandboxed execution
+      "tools": {
+        "exec": {
+          "security": "allowlist",     // ✅ Restricted commands
+          "allowlist": ["ls", "cat", "git"]
+        }
+      }
+    }
+  }
+}
+```
+
+### Security Level Comparison
+
+| Configuration | What strangers can do |
+|--------------|----------------------|
+| No config (default) | ⚠️ Can chat, but tools are limited |
+| `allowlist: [yourId]` | ✅ Cannot interact at all |
+| `dm: "off"` | ✅ DMs are ignored |
+| `groups: "mention"` | Must @mention to trigger response |
+| `sendPolicy: "deny"` | Agent cannot send first |
+| `sandbox: true` | Tools run in isolation |
+
+```mermaid
+flowchart TB
+    subgraph Security["Security Layers"]
+        L1["Layer 1: Allowlist/Denylist<br/>Who can message?"]
+        L2["Layer 2: DM/Group Policies<br/>Where to respond?"]
+        L3["Layer 3: Send Policy<br/>Can agent initiate?"]
+        L4["Layer 4: Tool Security<br/>What can agent execute?"]
+        L5["Layer 5: Sandbox<br/>Isolated execution?"]
+    end
+    
+    Msg[Incoming Message] --> L1
+    L1 -->|Allowed| L2
+    L1 -->|Denied| Block1[Ignored]
+    L2 -->|Allowed| Process[Process Message]
+    L2 -->|Denied| Block2[Ignored]
+    Process --> Agent[Agent Response]
+    Agent --> L3
+    L3 -->|Check| L4
+    L4 -->|Check| L5
+    L5 --> Execute[Safe Execution]
+```
+
+> **Recommendation:** For personal use, always configure `allowlist` with only your user ID to ensure complete control over your bot. 🔐
 
 ---
 
