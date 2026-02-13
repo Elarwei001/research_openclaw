@@ -1819,3 +1819,112 @@ stateDiagram-v2
 - [OpenClaw Docs: Session Management](https://docs.openclaw.ai/concepts/session)
 - [OpenClaw Docs: Compaction](https://docs.openclaw.ai/concepts/compaction)
 - [OpenClaw Docs: Token Use](https://docs.openclaw.ai/token-use)
+
+---
+
+## Appendix A: Sequence Diagram Step-by-Step Reference
+
+This appendix explains each numbered step in the Landscape sequence diagram.
+
+### Phase 1: Message Routing
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **1** | User sends message | Raw message arrives via Telegram/Discord/etc. webhook or polling |
+| **2** | `buildTelegramMessageContext()` | Extracts message metadata: sender ID, chat ID, message text, media attachments, reply context, forum thread ID |
+| **3** | `resolveAgentRoute({cfg, channel, peer})` | Determines which agent handles this message based on channel bindings config |
+| **4** | `buildAgentPeerSessionKey()` | Constructs session key from agentId + channel + peerKind + peerId (e.g., `agent:main:telegram:group:-100123456`) |
+| **5** | Return `{sessionKey, agentId, ...}` | Route resolution complete, ready to load session state |
+
+### Phase 2: Session State Loading
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **6** | `loadSessionStore(storePath)` | Entry point to load session metadata |
+| **7** | Check in-memory cache (TTL: 45s) | Performance optimization - avoid disk read if data is fresh |
+| **8** | [Cache Miss] Read `sessions.json` | Parse the entire session store file from disk |
+| **9** | Update cache | Store parsed data in memory for subsequent requests |
+| **10** | Return `SessionEntry` | Returns metadata: `{sessionId, sessionFile, inputTokens, modelOverride, thinkingLevel, ...}` |
+
+### Phase 3: Prepare Agent Execution
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **11** | `getReplyFromConfig(ctx, opts)` | Main entry point for reply processing |
+| **12** | `initSessionState()` | Initialize runtime state: check idle timeout, apply overrides, resolve delivery context |
+| **13** | `resolveReplyDirectives()` | Parse inline commands (`/think high`, `/model sonnet`) from user message, strip them from body |
+| **14** | `runPreparedReply()` | Assemble execution context: resolve session file path, build system prompt, prepare tools, handle group intro |
+| **15** | `runEmbeddedPiAgent({sessionFile, prompt, ...})` | Call into the agent execution layer with all prepared parameters |
+
+### Phase 4: Load Conversation History
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **16** | `acquireSessionWriteLock()` | Obtain exclusive lock on session file to prevent concurrent writes |
+| **17** | `SessionManager.open(sessionFile)` | Open the transcript `.jsonl` file for reading |
+| **18** | Read `.jsonl` (JSONL parse) | Parse each line as JSON, extract messages and metadata |
+| **19** | Return `messages[], compaction markers` | Raw message history with compaction boundaries |
+| **20** | `buildSessionContext()` | Filter messages based on compaction markers (skip pre-compaction messages) |
+| **21** | Return `{messages, sessionId}` | Processed message history ready for sanitization |
+| **22** | `sanitizeSessionHistory()` | Clean up messages: validate turn order, repair tool_use/tool_result pairing |
+| **23** | `limitHistoryTurns()` | Truncate history to configured DM history limit |
+| **24** | `replaceMessages(sanitized)` | Replace agent's message buffer with sanitized history |
+
+### Phase 5: LLM Invocation
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **25** | `createAgentSession()` | Initialize LLM connection with model, tools, settings |
+| **26** | `applySystemPromptOverride()` | Inject system prompt: workspace files (AGENTS.md, MEMORY.md), skills, extra context |
+| **27** | `activeSession.prompt(userMessage)` | Send user message to LLM, begin streaming response |
+| **28** | Streaming loop | Process response chunks: tokens → `onPartialReply()`, complete blocks → `onBlockReply()` |
+| **29** | [Tool Use] `tool_use` request | LLM requests tool execution (e.g., `exec`, `read`, `write`) |
+| **30** | Execute tool | Run the requested tool, capture output |
+| **31** | Send `tool_result` | Return tool output to LLM for continued processing |
+| **32** | Final response + usage stats | LLM completes response, returns token usage statistics |
+
+### Phase 6: Persist & Update
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **33** | `sessionManager.appendMessage()` | Append assistant response to transcript `.jsonl` file |
+| **34** | Append to `.jsonl` | Write new JSONL line(s) to disk |
+| **35** | [Optional] `appendCacheTtlTimestamp()` | Record cache TTL marker for context pruning (if `cache-ttl` mode) |
+| **36** | [Optional] `prepareCompaction()` | If context exceeds limit, generate summary and append compaction marker |
+| **37** | `updateSessionStore()` | Update session metadata (token counts, timestamps) |
+| **38** | Acquire file lock | Obtain exclusive lock on `sessions.json` |
+| **39** | Write `sessions.json` | Persist updated session metadata to disk |
+| **40** | Invalidate cache | Clear in-memory cache to force fresh read on next access |
+
+### Phase 7: Deliver Response
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| **41** | Return `{assistantText, usage, ...}` | Agent execution complete, return results to reply handler |
+| **42** | Return `ReplyPayload` | Format response for channel delivery |
+| **43** | Send response (Telegram API) | Deliver formatted message to user via channel API |
+
+### Quick Reference: Key Data Transformations
+
+```
+User Message
+     │
+     ▼ [Step 2-5]
+peer = {kind: "group", id: "-100123456"}
+sessionKey = "agent:main:telegram:group:-100123456"
+     │
+     ▼ [Step 6-10]
+SessionEntry = {sessionId: "abc-123", sessionFile: "abc-123.jsonl", ...}
+     │
+     ▼ [Step 11-15]
+ExecutionParams = {prompt: "cleaned message", thinkLevel: "high", ...}
+     │
+     ▼ [Step 16-24]
+messages = [{role: "user", ...}, {role: "assistant", ...}, ...]  // sanitized history
+     │
+     ▼ [Step 25-32]
+LLM Response = {text: "...", usage: {input: 1000, output: 500}}
+     │
+     ▼ [Step 33-43]
+User sees response in Telegram/Discord/etc.
+```
