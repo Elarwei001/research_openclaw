@@ -9,6 +9,7 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 
 ## Table of Contents
 
+0. [Landscape: End-to-End Message Flow](#landscape-end-to-end-message-flow)
 1. [Overview](#overview)
 2. [Session Architecture](#session-architecture)
 3. [Core Modules](#core-modules)
@@ -20,6 +21,160 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 9. [Token Management](#token-management)
 10. [Cache Management](#cache-management)
 11. [Session Lifecycle](#session-lifecycle)
+
+---
+
+## Landscape: End-to-End Message Flow
+
+This sequence diagram shows the complete journey of a user message through OpenClaw, from arrival to response delivery. All module names and function names are based on actual source code.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as User (Telegram/Discord/...)
+    participant Channel as Channel Handler<br/>(telegram/bot-message-context.ts)
+    participant Router as Route Resolver<br/>(routing/resolve-route.ts)
+    participant Store as Session Store<br/>(config/sessions/store.ts)
+    participant Reply as Reply Handler<br/>(auto-reply/reply/get-reply.ts)
+    participant Runner as Agent Runner<br/>(pi-embedded-runner/run/attempt.ts)
+    participant SM as Session Manager<br/>(@mariozechner/pi-coding-agent)
+    participant Transcript as Transcript File<br/>(~/.openclaw/.../session.jsonl)
+    participant LLM as LLM Provider<br/>(Anthropic/OpenAI/...)
+
+    Note over User,LLM: Phase 1: Message Routing
+
+    User->>Channel: Send message
+    Channel->>Channel: buildTelegramMessageContext()
+    Channel->>Router: resolveAgentRoute({cfg, channel, peer})
+    Router->>Router: buildAgentPeerSessionKey()
+    Router-->>Channel: {sessionKey, agentId, ...}
+
+    Note over User,LLM: Phase 2: Session State Loading
+
+    Channel->>Store: loadSessionStore(storePath)
+    Store->>Store: Check in-memory cache (TTL: 45s)
+    alt Cache Miss
+        Store->>Store: Read sessions.json
+        Store->>Store: Update cache
+    end
+    Store-->>Channel: SessionEntry {sessionId, sessionFile, ...}
+
+    Note over User,LLM: Phase 3: Prepare Agent Execution
+
+    Channel->>Reply: getReplyFromConfig(ctx, opts)
+    Reply->>Reply: initSessionState()
+    Reply->>Reply: resolveReplyDirectives()
+    Reply->>Reply: runPreparedReply()
+    Reply->>Runner: runEmbeddedPiAgent({sessionFile, prompt, ...})
+
+    Note over User,LLM: Phase 4: Load Conversation History
+
+    Runner->>Runner: acquireSessionWriteLock()
+    Runner->>SM: SessionManager.open(sessionFile)
+    SM->>Transcript: Read .jsonl (JSONL parse)
+    Transcript-->>SM: messages[], compaction markers
+    SM->>SM: buildSessionContext()
+    SM-->>Runner: {messages, sessionId}
+
+    Runner->>Runner: sanitizeSessionHistory()
+    Runner->>Runner: limitHistoryTurns()
+    Runner->>Runner: replaceMessages(sanitized)
+
+    Note over User,LLM: Phase 5: LLM Invocation
+
+    Runner->>Runner: createAgentSession()
+    Runner->>Runner: applySystemPromptOverride()
+    Runner->>LLM: activeSession.prompt(userMessage)
+    
+    loop Streaming Response
+        LLM-->>Runner: token chunks
+        Runner->>Runner: subscribeEmbeddedPiSession()
+        Runner-->>User: onBlockReply() / onPartialReply()
+    end
+
+    alt Tool Use
+        LLM-->>Runner: tool_use request
+        Runner->>Runner: Execute tool
+        Runner->>LLM: tool_result
+    end
+
+    LLM-->>Runner: Final response + usage stats
+
+    Note over User,LLM: Phase 6: Persist & Update
+
+    Runner->>SM: sessionManager.appendMessage()
+    SM->>Transcript: Append to .jsonl
+    
+    opt Context Pruning (cache-ttl mode)
+        Runner->>SM: appendCacheTtlTimestamp()
+    end
+
+    opt Compaction Needed
+        Runner->>SM: prepareCompaction()
+        SM->>Transcript: Append compaction summary
+    end
+
+    Runner->>Store: updateSessionStore()
+    Store->>Store: Acquire file lock
+    Store->>Store: Write sessions.json
+    Store->>Store: Invalidate cache
+
+    Note over User,LLM: Phase 7: Deliver Response
+
+    Runner-->>Reply: {assistantText, usage, ...}
+    Reply-->>Channel: ReplyPayload
+    Channel->>User: Send response (Telegram API)
+```
+
+### Key Modules Reference
+
+| Phase | Module | Key Functions |
+|-------|--------|---------------|
+| **Routing** | `telegram/bot-message-context.ts` | `buildTelegramMessageContext()` |
+| | `routing/resolve-route.ts` | `resolveAgentRoute()`, `buildAgentPeerSessionKey()` |
+| **Session State** | `config/sessions/store.ts` | `loadSessionStore()`, `updateSessionStore()` |
+| **Reply Logic** | `auto-reply/reply/get-reply.ts` | `getReplyFromConfig()`, `initSessionState()` |
+| | `auto-reply/reply/get-reply-run.ts` | `runPreparedReply()` |
+| **Agent Execution** | `agents/pi-embedded-runner/run.ts` | `runEmbeddedPiAgent()` |
+| | `agents/pi-embedded-runner/run/attempt.ts` | `runEmbeddedAttempt()` |
+| **Transcript** | `@mariozechner/pi-coding-agent` | `SessionManager.open()`, `appendMessage()` |
+| **LLM Call** | `@mariozechner/pi-ai` | `streamSimple()`, `activeSession.prompt()` |
+
+### Data Flow Summary
+
+```
+User Message
+     │
+     ▼
+┌─────────────────┐    ┌─────────────────┐
+│  sessions.json  │◄───│  Route/State    │
+│  (metadata)     │    │  Loading        │
+└─────────────────┘    └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │  session.jsonl  │◄─── History Load
+                       │  (transcript)   │
+                       └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │   LLM API       │
+                       │   (streaming)   │
+                       └────────┬────────┘
+                                │
+                                ▼
+┌─────────────────┐    ┌─────────────────┐
+│  session.jsonl  │◄───│  Persist        │──► User Response
+│  (append)       │    │  & Reply        │
+└─────────────────┘    └─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  sessions.json  │◄─── Update metadata
+│  (token stats)  │
+└─────────────────┘
+```
 
 ---
 
