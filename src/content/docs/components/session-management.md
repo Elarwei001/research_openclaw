@@ -13,10 +13,11 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 2. [Session Architecture](#session-architecture)
 3. [Core Modules](#core-modules)
 4. [Session Key System](#session-key-system)
-5. [Message Flow and Collaboration](#message-flow-and-collaboration)
-6. [Token Management](#token-management)
-7. [Cache Management](#cache-management)
-8. [Session Lifecycle](#session-lifecycle)
+5. [Multi-Agent Configuration](#multi-agent-configuration)
+6. [Message Flow and Collaboration](#message-flow-and-collaboration)
+7. [Token Management](#token-management)
+8. [Cache Management](#cache-management)
+9. [Session Lifecycle](#session-lifecycle)
 
 ---
 
@@ -38,53 +39,147 @@ A Session can be understood as a "conversation session" that contains:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Key Concepts
+
+#### SessionScope (Session Isolation Mode)
+
+Determines **how sessions are isolated between different users**:
+
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| `per-sender` | Each user gets an independent session | **Default**. User A and User B have separate conversation histories |
+| `global` | All users share the same session | Everyone sees the same conversation history (rare) |
+
+```mermaid
+flowchart LR
+    subgraph PerSender["per-sender (Default)"]
+        UA[User A] --> SA[Session A]
+        UB[User B] --> SB[Session B]
+        UC[User C] --> SC[Session C]
+    end
+    
+    subgraph Global["global"]
+        UA2[User A] --> SG[Shared Session]
+        UB2[User B] --> SG
+        UC2[User C] --> SG
+    end
+```
+
+#### SessionChatType (Chat Type)
+
+Describes **the type of chat the message originates from**:
+
+| Value | Description | Examples |
+|-------|-------------|----------|
+| `direct` | One-on-one private chat | Telegram DM, Discord DM |
+| `group` | Group chat | Telegram Group, Discord Server |
+| `channel` | Broadcast channel | Telegram Channel, Discord Announcement |
+
+**Impact on behavior:**
+- Session Key generation pattern
+- Whether @mention is required to respond (group activation)
+- Message delivery target
+
+---
+
 ## Session Architecture
 
 ### Overall Architecture Diagram
 
+```mermaid
+flowchart TB
+    subgraph Channels["Communication Channels"]
+        TG[Telegram]
+        DC[Discord]
+        WC[Webchat]
+        WA[WhatsApp]
+    end
+    
+    subgraph Gateway["Gateway Server"]
+        Router[Session Router]
+        
+        subgraph Sessions["Session Pool"]
+            S1["agent:main:main<br/>(Main Session)"]
+            S2["agent:main:telegram:123<br/>(User DM)"]
+            S3["agent:main:discord:group:456<br/>(Group Chat)"]
+            S4["agent:research:cron:daily<br/>(Cron Job)"]
+        end
+        
+        Store[(Session Store<br/>sessions.json)]
+        Trans[(Transcripts<br/>*.jsonl)]
+    end
+    
+    TG --> Router
+    DC --> Router
+    WC --> Router
+    WA --> Router
+    
+    Router --> S1
+    Router --> S2
+    Router --> S3
+    Router --> S4
+    
+    S1 & S2 & S3 & S4 --> Store
+    S1 & S2 & S3 & S4 --> Trans
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           Gateway Server                              │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
-│   │  Telegram   │    │   Discord   │    │   Webchat   │   ...       │
-│   │   Channel   │    │   Channel   │    │   Channel   │             │
-│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘             │
-│          │                  │                  │                      │
-│          └──────────────────┼──────────────────┘                      │
-│                             ▼                                         │
-│                    ┌─────────────────┐                               │
-│                    │  Session Router │  ← Routes to session based    │
-│                    └────────┬────────┘    on message source          │
-│                             │                                         │
-│          ┌──────────────────┼──────────────────┐                      │
-│          ▼                  ▼                  ▼                      │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
-│   │   Session   │    │   Session   │    │   Session   │             │
-│   │    Main     │    │  Telegram   │    │   Cron:X    │             │
-│   │  (default)  │    │   Group:Y   │    │ (isolated)  │             │
-│   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘             │
-│          │                  │                  │                      │
-│          └──────────────────┼──────────────────┘                      │
-│                             ▼                                         │
-│                    ┌─────────────────┐                               │
-│                    │  Session Store  │  ← Persisted in sessions.json │
-│                    └─────────────────┘                               │
-│                             │                                         │
-│                             ▼                                         │
-│                    ┌─────────────────┐                               │
-│                    │   Transcript    │  ← .jsonl files for history   │
-│                    │     Files       │                               │
-│                    └─────────────────┘                               │
-└──────────────────────────────────────────────────────────────────────┘
+
+### Storage Structure
+
 ```
+~/.openclaw/
+├── sessions/
+│   └── sessions.json              # Legacy/global session metadata
+│
+├── agents/
+│   ├── main/                       # Default agent (always exists)
+│   │   └── sessions/
+│   │       ├── sessions.json       # Agent-specific session metadata
+│   │       ├── abc-123.jsonl       # Transcript for session abc-123
+│   │       └── def-456.jsonl       # Transcript for session def-456
+│   │
+│   ├── research/                   # Custom agent: "research"
+│   │   └── sessions/
+│   │       ├── sessions.json
+│   │       └── *.jsonl
+│   │
+│   └── code/                       # Custom agent: "code"
+│       └── sessions/
+│           ├── sessions.json
+│           └── *.jsonl
+```
+
+> **Note:** `{agent-id}` in the path refers to custom agents you configure in `openclaw.json`. The `main` agent always exists as the default.
+
+---
 
 ## Core Modules
 
 ### 1. Session Store (`src/config/sessions/store.ts`)
 
 Responsible for persistent storage of session metadata.
+
+```mermaid
+flowchart LR
+    subgraph Store["Session Store"]
+        Cache[In-Memory Cache<br/>TTL: 45s]
+        File[(sessions.json)]
+    end
+    
+    Read[Read Request] --> Cache
+    Cache -->|Hit| Return[Return Data]
+    Cache -->|Miss| File
+    File --> Cache
+    Cache --> Return
+    
+    Write[Write Request] --> Lock[Acquire Lock]
+    Lock --> File
+    File --> Invalidate[Invalidate Cache]
+```
+
+**Key Features:**
+- **In-memory caching** with 45-second TTL for performance
+- **File-based locking** to prevent concurrent write corruption
+- **Atomic updates** via read-modify-write pattern
 
 ```typescript
 // Core data structure
@@ -116,23 +211,7 @@ type SessionEntry = {
   lastTo?: string;
   lastAccountId?: string;
   deliveryContext?: DeliveryContext;
-  
-  // ...more fields
 };
-```
-
-**Storage Location:**
-```
-~/.openclaw/
-├── sessions/
-│   └── sessions.json          # Session metadata
-├── agents/
-│   ├── main/
-│   │   └── sessions/
-│   │       ├── sessions.json  # Agent-specific sessions
-│   │       └── *.jsonl        # Transcript files
-│   └── {agent-id}/
-│       └── sessions/
 ```
 
 ### 2. Session Types (`src/config/sessions/types.ts`)
@@ -140,97 +219,375 @@ type SessionEntry = {
 Defines session types and utility functions.
 
 ```typescript
-// Session scope
+// Session scope - how to isolate users
 type SessionScope = "per-sender" | "global";
 
-// Chat type
+// Chat type - where the message comes from
 type SessionChatType = "direct" | "group" | "channel";
 
-// Session origin information
+// Session origin information - metadata about message source
 type SessionOrigin = {
   label?: string;
   provider?: string;      // telegram, discord, etc.
   surface?: string;       // chat, voice, etc.
   chatType?: SessionChatType;
-  from?: string;
-  to?: string;
-  accountId?: string;
+  from?: string;          // sender identifier
+  to?: string;            // recipient identifier
+  accountId?: string;     // bot account used
 };
 ```
 
 ### 3. Session Router (`src/routing/session-key.ts`)
 
-Routes messages to the correct session.
+Routes messages to the correct session by building and parsing session keys.
+
+```mermaid
+flowchart TB
+    subgraph Input["Incoming Message"]
+        Channel[Channel: telegram]
+        ChatType[ChatType: group]
+        GroupId[GroupId: -100123456]
+        SenderId[SenderId: 6813060849]
+    end
+    
+    subgraph Resolution["Key Resolution"]
+        GetAgent[1. Determine Agent ID<br/>from channel binding<br/>or default: main]
+        GetScope[2. Determine Scope<br/>per-sender or global]
+        BuildKey[3. Build Session Key]
+    end
+    
+    subgraph Output["Session Key"]
+        Key["agent:main:telegram:group:-100123456"]
+    end
+    
+    Input --> GetAgent
+    GetAgent --> GetScope
+    GetScope --> BuildKey
+    BuildKey --> Key
+```
+
+**Key Functions:**
+
+```typescript
+// Build session key for an agent's main session
+buildAgentMainSessionKey({ agentId: "main", mainKey: "main" })
+// → "agent:main:main"
+
+// Build session key for a peer (user/group) session
+buildAgentPeerSessionKey({
+  agentId: "main",
+  channel: "telegram",
+  peerId: "6813060849",
+  peerKind: "direct"
+})
+// → "agent:main:telegram:6813060849"
+
+// Extract agent ID from session key
+resolveAgentIdFromSessionKey("agent:research:cron:daily")
+// → "research"
+```
 
 ### 4. Transcript Manager (`src/config/sessions/transcript.ts`)
 
-Manages reading and writing of conversation history.
+Manages reading and writing of conversation history stored in JSONL format.
+
+```mermaid
+flowchart LR
+    subgraph Write["Write Flow"]
+        NewMsg[New Message] --> Append[Append to .jsonl]
+        Append --> Flush[Flush to Disk]
+    end
+    
+    subgraph Read["Read Flow"]
+        Load[Load Session] --> Parse[Parse JSONL]
+        Parse --> Filter[Filter by Type]
+        Filter --> Messages[Message Array]
+    end
+    
+    subgraph File["Transcript File"]
+        JSONL["session-abc.jsonl<br/>─────────────────<br/>{message: {...}}<br/>{message: {...}}<br/>{type: compaction}<br/>{message: {...}}"]
+    end
+    
+    Flush --> JSONL
+    JSONL --> Parse
+```
+
+**JSONL Format:**
+
+```jsonl
+{"message":{"role":"user","content":"Hello"},"timestamp":1707800000000}
+{"message":{"role":"assistant","content":"Hi!"},"timestamp":1707800001000}
+{"type":"compaction","id":"abc-123","timestamp":"2024-02-13T10:00:00Z"}
+{"message":{"role":"user","content":"What's next?"},"timestamp":1707800100000}
+```
+
+**Key Operations:**
+- **Append-only writes** for durability
+- **Streaming reads** for large transcripts
+- **Compaction markers** to track context compression events
 
 ### 5. Session Reset (`src/config/sessions/reset.ts`)
 
-Handles session reset logic (/new, /reset commands).
+Handles session reset logic triggered by commands or idle timeout.
+
+```mermaid
+flowchart TB
+    subgraph Triggers["Reset Triggers"]
+        Cmd["/new or /reset command"]
+        Idle["Idle timeout<br/>(default: 60 min)"]
+        API["sessions.reset API"]
+    end
+    
+    subgraph Process["Reset Process"]
+        Check{Reset<br/>Allowed?}
+        NewId[Generate new sessionId]
+        NewFile[Create new transcript file]
+        Preserve[Preserve user preferences]
+        Clear[Clear token counters]
+        Save[Save to sessions.json]
+    end
+    
+    subgraph Preserved["Preserved Fields"]
+        P1[thinkingLevel]
+        P2[verboseLevel]
+        P3[modelOverride]
+        P4[sendPolicy]
+        P5[deliveryContext]
+    end
+    
+    subgraph Cleared["Cleared Fields"]
+        C1[sessionId → new UUID]
+        C2[sessionFile → new path]
+        C3[totalTokens → undefined]
+        C4[compactionCount → 0]
+    end
+    
+    Cmd --> Check
+    Idle --> Check
+    API --> Check
+    Check -->|Yes| NewId
+    NewId --> NewFile
+    NewFile --> Preserve
+    Preserve --> Clear
+    Clear --> Save
+    
+    Preserve -.-> Preserved
+    Clear -.-> Cleared
+```
+
+**Reset Behavior:**
+
+```typescript
+// Fields preserved on reset (user preferences stay)
+const PRESERVED_FIELDS = [
+  'thinkingLevel',
+  'verboseLevel', 
+  'sendPolicy',
+  'modelOverride',
+  'providerOverride',
+  'label',
+  'displayName',
+  'deliveryContext',
+  'lastChannel',
+  'lastTo',
+  'lastAccountId'
+];
+
+// Fields cleared on reset (conversation state resets)
+const CLEARED_FIELDS = [
+  'sessionId',        // Generate new UUID
+  'sessionFile',      // Point to new transcript
+  'totalTokens',
+  'inputTokens', 
+  'outputTokens',
+  'compactionCount',
+  'skillsSnapshot'
+];
+```
 
 ---
 
 ## Session Key System
 
-Session Key is the routing identifier for sessions, using a hierarchical structure:
+Session Key is the routing identifier for sessions, using a hierarchical structure.
 
-### Key Format
+### Key Format Breakdown
 
 ```
-agent:{agentId}:{sessionType}:{identifier}
+agent:main:main
+  │    │    │
+  │    │    └── Session Identifier
+  │    │        • "main" = main session
+  │    │        • "telegram:123456" = Telegram user
+  │    │        • "cron:job-1" = Cron job
+  │    │        • "discord:group:789" = Discord group
+  │    │
+  │    └── Agent ID
+  │        • "main" = default agent
+  │        • "research" = custom research agent
+  │        • "code" = custom code agent
+  │
+  └── Prefix (literal)
+      Indicates this is an agent-scoped session
 ```
 
-### Common Session Key Types
+### Common Session Key Patterns
 
 | Type | Format | Example |
 |------|--------|---------|
 | Main Session | `agent:{agentId}:main` | `agent:main:main` |
-| Direct Chat | `agent:{agentId}:{channel}:{userId}` | `agent:main:telegram:123456` |
-| Group Chat | `agent:{agentId}:{channel}:group:{groupId}` | `agent:main:discord:group:789` |
+| Direct Chat | `agent:{agentId}:{channel}:{userId}` | `agent:main:telegram:6813060849` |
+| Group Chat | `agent:{agentId}:{channel}:group:{groupId}` | `agent:main:discord:group:123456` |
+| Channel | `agent:{agentId}:{channel}:channel:{channelId}` | `agent:main:telegram:channel:-100123` |
 | Cron Job | `agent:{agentId}:cron:{jobId}` | `agent:main:cron:daily-check` |
 | Cron Run | `agent:{agentId}:cron:{jobId}:run:{uuid}` | `agent:main:cron:daily-check:run:abc-123` |
 | Subagent | `agent:{agentId}:subagent:{label}:{uuid}` | `agent:main:subagent:researcher:def-456` |
 
 ### Key Resolution Flow
 
+```mermaid
+flowchart TB
+    Start[Message Arrives] --> Extract[Extract Context]
+    
+    Extract --> Context["• channel (telegram/discord/...)<br/>• chatType (direct/group/channel)<br/>• senderId<br/>• groupId (if applicable)"]
+    
+    Context --> Agent[Determine Agent ID]
+    Agent --> AgentLogic{"Channel binding<br/>configured?"}
+    AgentLogic -->|Yes| BoundAgent[Use bound agentId]
+    AgentLogic -->|No| DefaultAgent[Use 'main']
+    
+    BoundAgent --> Build[Build Session Key]
+    DefaultAgent --> Build
+    
+    Build --> BuildLogic["buildAgentPeerSessionKey({<br/>  agentId,<br/>  channel,<br/>  peerId,<br/>  peerKind<br/>})"]
+    
+    BuildLogic --> Key["agent:main:telegram:group:-100123456"]
+    
+    Key --> Load[Load/Create SessionEntry]
+    Load --> Store[(sessions.json)]
 ```
-User message arrives
-     │
-     ▼
-┌─────────────────────────────────────┐
-│  1. Extract message context          │
-│     - channel (telegram/discord/..) │
-│     - chatType (direct/group)       │
-│     - senderId                      │
-│     - groupId (if group)            │
-└─────────────────┬───────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────┐
-│  2. Determine Agent ID               │
-│     - From channel binding config    │
-│     - Or use default agent (main)    │
-└─────────────────┬───────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────┐
-│  3. Build Session Key                │
-│     buildAgentPeerSessionKey({      │
-│       agentId,                      │
-│       channel,                      │
-│       peerId,                       │
-│       peerKind                      │
-│     })                              │
-└─────────────────┬───────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────┐
-│  4. Load or create Session Entry     │
-│     loadSessionStore(storePath)     │
-│     store[sessionKey]               │
-└─────────────────────────────────────┘
+
+---
+
+## Multi-Agent Configuration
+
+OpenClaw supports multiple agents, each with its own workspace, model configuration, and sessions.
+
+### Configuring Multiple Agents
+
+In `openclaw.json`:
+
+```json
+{
+  "agents": {
+    "agents": [
+      {
+        "id": "research",
+        "name": "Research Agent",
+        "workspace": "~/.openclaw/workspace-research",
+        "model": "anthropic/claude-sonnet-4-5"
+      },
+      {
+        "id": "code",
+        "name": "Code Agent", 
+        "workspace": "~/.openclaw/workspace-code",
+        "model": "anthropic/claude-sonnet-4-5"
+      }
+    ]
+  }
+}
+```
+
+### Invoking Different Agents
+
+```mermaid
+flowchart TB
+    subgraph Methods["Invocation Methods"]
+        CLI["1. CLI --agent flag"]
+        Binding["2. Channel Binding"]
+        Inter["3. Inter-agent calls"]
+        Cron["4. Cron agentId"]
+    end
+    
+    subgraph Agents["Agents"]
+        Main[agent:main]
+        Research[agent:research]
+        Code[agent:code]
+    end
+    
+    CLI -->|"--agent research"| Research
+    Binding -->|"chatId binding"| Code
+    Inter -->|"sessions_send()"| Research
+    Cron -->|"agentId: code"| Code
+```
+
+#### Method 1: CLI `--agent` Flag
+
+```bash
+# Invoke research agent directly
+openclaw agent --agent research --message "Research topic X"
+
+# Invoke code agent
+openclaw agent --agent code --message "Write a function"
+
+# Or use session-id
+openclaw agent --session-id agent:research:main --message "..."
+```
+
+#### Method 2: Channel Binding
+
+Route specific chats to specific agents:
+
+```json
+{
+  "telegram": {
+    "accounts": [{
+      "id": "my-bot",
+      "token": "...",
+      "bindings": [
+        { "chatId": "-100111111", "agentId": "research" },
+        { "chatId": "-100222222", "agentId": "code" }
+      ]
+    }]
+  }
+}
+```
+
+#### Method 3: Inter-Agent Communication
+
+Agents can communicate with each other:
+
+```typescript
+// Send message to another agent's session
+sessions_send({
+  sessionKey: "agent:research:main",
+  message: "Please research this topic"
+});
+
+// Spawn a sub-agent task
+sessions_spawn({
+  agentId: "research",
+  task: "Research and summarize topic X"
+});
+```
+
+#### Method 4: Cron Job Agent Assignment
+
+```json
+{
+  "cron": {
+    "jobs": [{
+      "id": "daily-research",
+      "agentId": "research",
+      "schedule": { "kind": "cron", "expr": "0 9 * * *" },
+      "sessionTarget": "isolated",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Generate daily research report"
+      }
+    }]
+  }
+}
 ```
 
 ---
@@ -239,113 +596,88 @@ User message arrives
 
 ### Single Request Flow
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        User sends message                             │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  1. Channel Handler receives message                                  │
-│     - Parse message content, sender info                              │
-│     - Determine if response needed (group activation, mentions...)   │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  2. Session Resolution                                                │
-│     - Calculate sessionKey from message context                       │
-│     - Load SessionEntry from sessions.json                           │
-│     - Create new SessionEntry if not exists                          │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  3. Message Queue                                                     │
-│     - Check queue mode (steer/followup/collect/queue)                │
-│     - Debounce handling                                               │
-│     - Queue capacity check                                            │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  4. Agent Turn Execution                                              │
-│     a. Load transcript (conversation history)                         │
-│     b. Build system prompt (workspace files, skills, tools...)       │
-│     c. Token budget check → may trigger Compaction                   │
-│     d. Call LLM Provider                                             │
-│     e. Process tool calls (if any)                                   │
-│     f. Generate response                                              │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  5. Response Delivery                                                 │
-│     - Determine delivery target from SessionEntry.deliveryContext    │
-│     - Send response through corresponding channel                    │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  6. Session Update                                                    │
-│     - Update transcript file (append messages)                       │
-│     - Update SessionEntry (tokens, updatedAt, ...)                   │
-│     - Persist to sessions.json                                       │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant User
+    participant Channel as Channel Handler
+    participant Router as Session Router
+    participant Queue as Message Queue
+    participant Agent as Agent Runner
+    participant LLM as LLM Provider
+    participant Store as Session Store
+    
+    User->>Channel: Send message
+    Channel->>Router: Route message
+    Router->>Router: Build sessionKey
+    Router->>Store: Load SessionEntry
+    Store-->>Router: SessionEntry
+    Router->>Queue: Enqueue message
+    Queue->>Agent: Dequeue & execute
+    Agent->>Agent: Load transcript
+    Agent->>Agent: Build system prompt
+    Agent->>Agent: Check token budget
+    Agent->>LLM: Call API
+    LLM-->>Agent: Response
+    Agent->>Store: Update SessionEntry
+    Agent->>Store: Append to transcript
+    Agent->>Channel: Send response
+    Channel->>User: Deliver message
 ```
 
 ### Multi-Session Collaboration Scenarios
 
 #### Scenario 1: Subagent Invocation
 
-```
-┌─────────────┐         ┌─────────────┐
-│   Main      │         │  Subagent   │
-│  Session    │         │  Session    │
-└──────┬──────┘         └──────┬──────┘
-       │                       │
-       │  sessions_spawn()     │
-       │──────────────────────▶│
-       │                       │
-       │                       │ Execute task
-       │                       │
-       │  Result via announce  │
-       │◀──────────────────────│
-       │                       │
+```mermaid
+sequenceDiagram
+    participant Main as Main Session
+    participant Spawn as sessions_spawn()
+    participant Sub as Subagent Session
+    participant Announce as Announce Flow
+    
+    Main->>Spawn: Spawn subagent task
+    Spawn->>Sub: Create isolated session
+    Sub->>Sub: Execute task
+    Sub->>Sub: Generate result
+    Sub->>Announce: Send result
+    Announce->>Main: Deliver announcement
+    Main->>Main: Continue conversation
 ```
 
 #### Scenario 2: Cron Isolated Session
 
-```
-┌─────────────┐         ┌─────────────┐
-│   Main      │         │   Cron      │
-│  Session    │         │  Isolated   │
-└──────┬──────┘         └──────┬──────┘
-       │                       │
-       │                       │ Cron triggers
-       │                       │──────────▶ Execute agentTurn independently
-       │                       │
-       │  announce (optional)  │
-       │◀──────────────────────│ Send summary to main
-       │                       │
+```mermaid
+sequenceDiagram
+    participant Timer as Cron Timer
+    participant Cron as Cron Session
+    participant Agent as Agent Runner
+    participant Main as Main Session
+    
+    Timer->>Cron: Trigger job
+    Cron->>Agent: Execute agentTurn
+    Agent->>Agent: Run in isolation
+    Agent-->>Cron: Result
+    Cron->>Main: Announce summary (optional)
+    Note over Cron: Session cleaned up<br/>after retention period
 ```
 
-#### Scenario 3: Cross-Agent Sessions
+#### Scenario 3: Cross-Agent Communication
 
-```
-┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-│   Agent A   │         │   Agent B   │         │   Agent C   │
-│  (main)     │         │  (research) │         │  (code)     │
-└──────┬──────┘         └──────┬──────┘         └──────┬──────┘
-       │                       │                       │
-       │  sessions_send()      │                       │
-       │──────────────────────▶│                       │
-       │                       │                       │
-       │                       │  sessions_send()      │
-       │                       │──────────────────────▶│
-       │                       │                       │
-       │                       │◀──────────────────────│
-       │◀──────────────────────│                       │
+```mermaid
+sequenceDiagram
+    participant A as Agent: main
+    participant Send as sessions_send()
+    participant B as Agent: research
+    participant C as Agent: code
+    
+    A->>Send: Request research
+    Send->>B: Deliver message
+    B->>B: Process request
+    B->>Send: Request code
+    Send->>C: Deliver message
+    C->>C: Generate code
+    C-->>B: Return result
+    B-->>A: Return research + code
 ```
 
 ---
@@ -366,72 +698,49 @@ interface SessionEntry {
 
 ### Token Calculation Flow
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     Agent Turn starts                                 │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  1. Load history messages                                             │
-│     messages = readSessionMessages(sessionId, storePath)              │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  2. Estimate current token usage                                      │
-│     estimatedTokens = estimateMessagesTokens(messages)                │
-│     + systemPromptTokens                                              │
-│     + newMessageTokens                                                │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  3. Check if exceeds context window                                   │
-│     if (estimatedTokens > contextTokens * threshold)                  │
-│       → Trigger Compaction                                           │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  4. Update statistics after LLM call                                  │
-│     usage = response.usage                                            │
-│     sessionEntry.inputTokens += usage.input                          │
-│     sessionEntry.outputTokens += usage.output                        │
-│     sessionEntry.totalTokens = deriveSessionTotalTokens(usage)       │
-│     sessionEntry.totalTokensFresh = true                             │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Start[Agent Turn Starts] --> Load[Load history messages]
+    Load --> Estimate["Estimate tokens:<br/>messages + system prompt + new message"]
+    Estimate --> Check{Exceeds<br/>threshold?}
+    Check -->|Yes| Compact[Trigger Compaction]
+    Check -->|No| Call[Call LLM]
+    Compact --> Call
+    Call --> Usage[Get usage from response]
+    Usage --> Update["Update SessionEntry:<br/>• inputTokens += usage.input<br/>• outputTokens += usage.output<br/>• totalTokens = derived value<br/>• totalTokensFresh = true"]
+    Update --> Save[Persist to sessions.json]
 ```
 
 ### Compaction (Context Compression)
 
-Automatically triggered when conversation history becomes too long:
-
-```typescript
-// src/agents/compaction.ts
-
-async function compactSession(params: {
-  messages: AgentMessage[];
-  contextTokens: number;
-  reserveTokens: number;
-}) {
-  // 1. Calculate range of messages to compress
-  const targetTokens = contextTokens - reserveTokens;
-  
-  // 2. Split messages into chunks
-  const chunks = splitMessagesByTokenShare(messages, 2);
-  
-  // 3. Generate summary for each chunk
-  const summaries = await Promise.all(
-    chunks.map(chunk => generateSummary(chunk))
-  );
-  
-  // 4. Merge summaries
-  const mergedSummary = await mergeSummaries(summaries);
-  
-  // 5. Return compressed messages (summary + recent messages)
-  return [summaryMessage, ...recentMessages];
-}
+```mermaid
+flowchart LR
+    subgraph Before["Before Compaction"]
+        M1[Msg 1]
+        M2[Msg 2]
+        M3[Msg 3]
+        M4[Msg 4]
+        M5[Msg 5]
+        M6[Msg 6]
+    end
+    
+    subgraph Process["Compaction"]
+        Split[Split into chunks]
+        Sum1[Summarize chunk 1]
+        Sum2[Summarize chunk 2]
+        Merge[Merge summaries]
+    end
+    
+    subgraph After["After Compaction"]
+        Summary[Combined Summary]
+        M5b[Msg 5]
+        M6b[Msg 6]
+    end
+    
+    Before --> Split
+    Split --> Sum1 & Sum2
+    Sum1 & Sum2 --> Merge
+    Merge --> After
 ```
 
 **Compaction Strategies:**
@@ -450,24 +759,24 @@ OpenClaw supports multi-layer cache strategies to optimize token usage and respo
 
 ### 1. Provider-Level Prompt Caching
 
-Leverages native prompt caching capabilities of LLM providers:
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Prompt Structure                               │
-├──────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────┐                         │
-│  │  Static Prefix (cacheable)              │                         │
-│  │  - System Prompt                        │  ← cache_control        │
-│  │  - Workspace Files                      │     breakpoint          │
-│  │  - Skills                               │                         │
-│  └─────────────────────────────────────────┘                         │
-│  ┌─────────────────────────────────────────┐                         │
-│  │  Dynamic Suffix (changes each time)     │                         │
-│  │  - Conversation history                 │                         │
-│  │  - Current user message                 │                         │
-│  └─────────────────────────────────────────┘                         │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Prompt["Prompt Structure"]
+        subgraph Static["Static Prefix (Cacheable)"]
+            SP[System Prompt]
+            WF[Workspace Files]
+            SK[Skills]
+        end
+        
+        subgraph Dynamic["Dynamic Suffix"]
+            HI[Conversation History]
+            UM[User Message]
+        end
+    end
+    
+    Static -->|cache_control breakpoint| Cache[(Provider Cache)]
+    Cache -->|Cache hit| Fast[Fast response<br/>10x cheaper]
+    Dynamic --> LLM[LLM Processing]
 ```
 
 **Provider Cache Methods:**
@@ -482,64 +791,20 @@ Leverages native prompt caching capabilities of LLM providers:
 
 ### 2. Session Store Cache
 
-In-memory cache for session metadata:
-
-```typescript
-// src/config/sessions/store.ts
-
-const SESSION_STORE_CACHE = new Map<string, SessionStoreCacheEntry>();
-const DEFAULT_SESSION_STORE_TTL_MS = 45_000; // 45 seconds
-
-type SessionStoreCacheEntry = {
-  store: Record<string, SessionEntry>;
-  loadedAt: number;
-  storePath: string;
-  mtimeMs?: number;  // File modification time for invalidation
-};
-
-function loadSessionStore(storePath: string): Record<string, SessionEntry> {
-  // 1. Check cache
-  const cached = SESSION_STORE_CACHE.get(storePath);
-  if (cached && isSessionStoreCacheValid(cached)) {
-    return cached.store;
-  }
-  
-  // 2. Load from file
-  const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-  
-  // 3. Update cache
-  SESSION_STORE_CACHE.set(storePath, {
-    store,
-    loadedAt: Date.now(),
-    storePath,
-    mtimeMs: getFileMtimeMs(storePath)
-  });
-  
-  return store;
-}
+```mermaid
+flowchart LR
+    Request[Load Session] --> CacheCheck{Cache<br/>Valid?}
+    CacheCheck -->|Yes| Return[Return from cache]
+    CacheCheck -->|No| ReadFile[Read sessions.json]
+    ReadFile --> UpdateCache[Update cache]
+    UpdateCache --> Return
+    
+    Write[Write Session] --> AcquireLock[Acquire file lock]
+    AcquireLock --> WriteFile[Write sessions.json]
+    WriteFile --> Invalidate[Invalidate cache]
 ```
 
-### 3. Cache TTL Tracking
-
-Track cache state to optimize heartbeat and context pruning:
-
-```typescript
-// src/agents/pi-embedded-runner/cache-ttl.ts
-
-// Record last cache timestamp
-function appendCacheTtlTimestamp(sessionManager, {
-  timestamp: Date.now(),
-  provider,
-  modelId
-});
-
-// Check if cache is still valid
-function isCacheStillValid(lastTimestamp: number, ttlMs: number): boolean {
-  return Date.now() - lastTimestamp < ttlMs;
-}
-```
-
-### Cache Optimization Configuration Example
+### Cache Optimization Configuration
 
 ```json
 {
@@ -568,27 +833,18 @@ function isCacheStillValid(lastTimestamp: number, ttlMs: number): boolean {
 
 ## Session Lifecycle
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Session Lifecycle                             │
-└─────────────────────────────────────────────────────────────────────┘
-
-   Create                    Active                    Reset/Delete
-    │                         │                            │
-    ▼                         ▼                            ▼
-┌────────┐              ┌──────────┐                ┌──────────┐
-│  New   │─────────────▶│   In     │───────────────▶│  Reset   │
-│ message│              │ Convo    │   /new         │ /delete  │
-│ arrives│              │          │                │          │
-└────────┘              └────┬─────┘                └──────────┘
-                             │
-                             │ Idle timeout
-                             │ (idle reset)
-                             ▼
-                       ┌──────────┐
-                       │  Auto    │
-                       │  Reset   │
-                       └──────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Created: New message arrives
+    Created --> Active: Session initialized
+    Active --> Active: Messages exchanged
+    Active --> Compacted: Context limit reached
+    Compacted --> Active: Continue conversation
+    Active --> Reset: /new or /reset command
+    Active --> Reset: Idle timeout
+    Active --> Deleted: sessions.delete
+    Reset --> Active: New conversation
+    Deleted --> [*]
 ```
 
 ### Reset Triggers
@@ -599,36 +855,6 @@ function isCacheStillValid(lastTimestamp: number, ttlMs: number): boolean {
 | Idle timeout | Exceeds `idleMinutes` without activity | Reset on next message |
 | Manual delete | `sessions.delete` | Delete entry + archive transcript |
 | Cron cleanup | `sessionRetention` expired | Clean up isolated cron sessions |
-
-### Reset Behavior
-
-```typescript
-// Fields preserved on reset
-const PRESERVED_FIELDS = [
-  'thinkingLevel',
-  'verboseLevel', 
-  'sendPolicy',
-  'modelOverride',
-  'providerOverride',
-  'label',
-  'displayName',
-  'deliveryContext',
-  'lastChannel',
-  'lastTo',
-  'lastAccountId'
-];
-
-// Fields cleared on reset
-const CLEARED_FIELDS = [
-  'sessionId',        // Generate new one
-  'sessionFile',      // Point to new transcript
-  'totalTokens',
-  'inputTokens', 
-  'outputTokens',
-  'compactionCount',
-  'skillsSnapshot'
-];
-```
 
 ---
 
