@@ -140,6 +140,40 @@ sequenceDiagram
 | **Transcript** | `@mariozechner/pi-coding-agent` | `SessionManager.open()`, `appendMessage()` |
 | **LLM Call** | `@mariozechner/pi-ai` | `streamSimple()`, `activeSession.prompt()` |
 
+### Key Concept: Peer
+
+In the routing phase, `peer` represents "who you're chatting with":
+
+```typescript
+type RoutePeer = {
+  kind: "direct" | "group" | "channel";  // conversation type
+  id: string;                             // identifier
+};
+```
+
+| Scenario | peer.kind | peer.id | Example |
+|----------|-----------|---------|---------|
+| Telegram DM | `"direct"` | user ID | `"6813060849"` |
+| Telegram Group | `"group"` | chat ID | `"-100123456"` |
+| Telegram Channel | `"channel"` | channel ID | `"-100789"` |
+| Discord Channel | `"channel"` | channel ID | `"123456789"` |
+| Discord DM | `"direct"` | user ID | `"987654321"` |
+
+The peer information flows through the routing pipeline:
+
+```
+Telegram Message
+     │
+     ▼ buildTelegramMessageContext()
+peer = { kind: "group", id: "-100123456" }
+     │
+     ▼ resolveAgentRoute({cfg, channel, peer})
+     │
+     ▼ buildAgentPeerSessionKey({peerKind, peerId, ...})
+     │
+     ▼ sessionKey = "agent:main:telegram:group:-100123456"
+```
+
 ### Data Flow Summary
 
 ```
