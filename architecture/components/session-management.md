@@ -9,6 +9,7 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 
 ## Table of Contents
 
+0. [Landscape: End-to-End Message Flow](#landscape-end-to-end-message-flow)
 1. [Overview](#overview)
 2. [Session Architecture](#session-architecture)
 3. [Core Modules](#core-modules)
@@ -20,6 +21,160 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 9. [Token Management](#token-management)
 10. [Cache Management](#cache-management)
 11. [Session Lifecycle](#session-lifecycle)
+
+---
+
+## Landscape: End-to-End Message Flow
+
+This sequence diagram shows the complete journey of a user message through OpenClaw, from arrival to response delivery. All module names and function names are based on actual source code.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as User (Telegram/Discord/...)
+    participant Channel as Channel Handler<br/>(telegram/bot-message-context.ts)
+    participant Router as Route Resolver<br/>(routing/resolve-route.ts)
+    participant Store as Session Store<br/>(config/sessions/store.ts)
+    participant Reply as Reply Handler<br/>(auto-reply/reply/get-reply.ts)
+    participant Runner as Agent Runner<br/>(pi-embedded-runner/run/attempt.ts)
+    participant SM as Session Manager<br/>(@mariozechner/pi-coding-agent)
+    participant Transcript as Transcript File<br/>(~/.openclaw/.../session.jsonl)
+    participant LLM as LLM Provider<br/>(Anthropic/OpenAI/...)
+
+    Note over User,LLM: Phase 1: Message Routing
+
+    User->>Channel: Send message
+    Channel->>Channel: buildTelegramMessageContext()
+    Channel->>Router: resolveAgentRoute({cfg, channel, peer})
+    Router->>Router: buildAgentPeerSessionKey()
+    Router-->>Channel: {sessionKey, agentId, ...}
+
+    Note over User,LLM: Phase 2: Session State Loading
+
+    Channel->>Store: loadSessionStore(storePath)
+    Store->>Store: Check in-memory cache (TTL: 45s)
+    alt Cache Miss
+        Store->>Store: Read sessions.json
+        Store->>Store: Update cache
+    end
+    Store-->>Channel: SessionEntry {sessionId, sessionFile, ...}
+
+    Note over User,LLM: Phase 3: Prepare Agent Execution
+
+    Channel->>Reply: getReplyFromConfig(ctx, opts)
+    Reply->>Reply: initSessionState()
+    Reply->>Reply: resolveReplyDirectives()
+    Reply->>Reply: runPreparedReply()
+    Reply->>Runner: runEmbeddedPiAgent({sessionFile, prompt, ...})
+
+    Note over User,LLM: Phase 4: Load Conversation History
+
+    Runner->>Runner: acquireSessionWriteLock()
+    Runner->>SM: SessionManager.open(sessionFile)
+    SM->>Transcript: Read .jsonl (JSONL parse)
+    Transcript-->>SM: messages[], compaction markers
+    SM->>SM: buildSessionContext()
+    SM-->>Runner: {messages, sessionId}
+
+    Runner->>Runner: sanitizeSessionHistory()
+    Runner->>Runner: limitHistoryTurns()
+    Runner->>Runner: replaceMessages(sanitized)
+
+    Note over User,LLM: Phase 5: LLM Invocation
+
+    Runner->>Runner: createAgentSession()
+    Runner->>Runner: applySystemPromptOverride()
+    Runner->>LLM: activeSession.prompt(userMessage)
+    
+    loop Streaming Response
+        LLM-->>Runner: token chunks
+        Runner->>Runner: subscribeEmbeddedPiSession()
+        Runner-->>User: onBlockReply() / onPartialReply()
+    end
+
+    alt Tool Use
+        LLM-->>Runner: tool_use request
+        Runner->>Runner: Execute tool
+        Runner->>LLM: tool_result
+    end
+
+    LLM-->>Runner: Final response + usage stats
+
+    Note over User,LLM: Phase 6: Persist & Update
+
+    Runner->>SM: sessionManager.appendMessage()
+    SM->>Transcript: Append to .jsonl
+    
+    opt Context Pruning (cache-ttl mode)
+        Runner->>SM: appendCacheTtlTimestamp()
+    end
+
+    opt Compaction Needed
+        Runner->>SM: prepareCompaction()
+        SM->>Transcript: Append compaction summary
+    end
+
+    Runner->>Store: updateSessionStore()
+    Store->>Store: Acquire file lock
+    Store->>Store: Write sessions.json
+    Store->>Store: Invalidate cache
+
+    Note over User,LLM: Phase 7: Deliver Response
+
+    Runner-->>Reply: {assistantText, usage, ...}
+    Reply-->>Channel: ReplyPayload
+    Channel->>User: Send response (Telegram API)
+```
+
+### Key Modules Reference
+
+| Phase | Module | Key Functions |
+|-------|--------|---------------|
+| **Routing** | `telegram/bot-message-context.ts` | `buildTelegramMessageContext()` |
+| | `routing/resolve-route.ts` | `resolveAgentRoute()`, `buildAgentPeerSessionKey()` |
+| **Session State** | `config/sessions/store.ts` | `loadSessionStore()`, `updateSessionStore()` |
+| **Reply Logic** | `auto-reply/reply/get-reply.ts` | `getReplyFromConfig()`, `initSessionState()` |
+| | `auto-reply/reply/get-reply-run.ts` | `runPreparedReply()` |
+| **Agent Execution** | `agents/pi-embedded-runner/run.ts` | `runEmbeddedPiAgent()` |
+| | `agents/pi-embedded-runner/run/attempt.ts` | `runEmbeddedAttempt()` |
+| **Transcript** | `@mariozechner/pi-coding-agent` | `SessionManager.open()`, `appendMessage()` |
+| **LLM Call** | `@mariozechner/pi-ai` | `streamSimple()`, `activeSession.prompt()` |
+
+### Data Flow Summary
+
+```
+User Message
+     │
+     ▼
+┌─────────────────┐    ┌─────────────────┐
+│  sessions.json  │◄───│  Route/State    │
+│  (metadata)     │    │  Loading        │
+└─────────────────┘    └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │  session.jsonl  │◄─── History Load
+                       │  (transcript)   │
+                       └────────┬────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐
+                       │   LLM API       │
+                       │   (streaming)   │
+                       └────────┬────────┘
+                                │
+                                ▼
+┌─────────────────┐    ┌─────────────────┐
+│  session.jsonl  │◄───│  Persist        │──► User Response
+│  (append)       │    │  & Reply        │
+└─────────────────┘    └─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  sessions.json  │◄─── Update metadata
+│  (token stats)  │
+└─────────────────┘
+```
 
 ---
 
@@ -183,6 +338,89 @@ flowchart LR
 - **File-based locking** to prevent concurrent write corruption
 - **Atomic updates** via read-modify-write pattern
 
+**Read Request Sources:**
+
+| Module | Purpose |
+|--------|---------|
+| `telegram/bot-message-context.ts` | Check session state before processing messages |
+| `discord/monitor/message-handler.process.ts` | Same as above |
+| `slack/monitor/message-handler/prepare.ts` | Same as above |
+| `signal/monitor/event-handler.ts` | Same as above |
+| `heartbeat-runner.ts` | Check which sessions need heartbeat |
+| `agents/tools/session-status-tool.ts` | `/status` command reads state |
+| `agents/subagent-announce.ts` | Subagent checks session state |
+
+**Write Request Sources:**
+
+| Module | Purpose |
+|--------|---------|
+| `heartbeat-runner.ts` | Update `lastHeartbeatAt` timestamp |
+| `agents/pi-embedded-runner/` | Save session state after agent run |
+| `session-status-tool.ts` | `/status model=xxx` sets model override |
+| `auth-profiles/session-override.ts` | Auth profile overrides |
+| `config/sessions/transcript.ts` | Save conversation transcripts |
+
+> **Summary:** Channel modules (Telegram/Discord/Slack/...) primarily read; Agent runtime and Heartbeat primarily write.
+
+**Why File Locking is Necessary:**
+
+Even though OpenClaw is single-process, Node.js's async nature creates concurrent write risks:
+
+```javascript
+// These can interleave!
+async function agentA() {
+  const store = await readFile('sessions.json');  // ① read
+  store['sessionA'] = { ... };                     // ② modify
+  await writeFile('sessions.json', store);         // ⑤ write (overwrites B!)
+}
+
+async function agentB() {
+  const store = await readFile('sessions.json');  // ③ read (stale data)
+  store['sessionB'] = { ... };                     // ④ modify
+  await writeFile('sessions.json', store);         // ⑥ write
+}
+```
+
+Concurrent scenarios:
+- **Multi-channel concurrency** - Telegram and Discord receive messages simultaneously
+- **Heartbeat + message processing** - Heartbeat task and normal messages trigger together
+- **Multiple subagents** - Parallel subagents each updating session state
+- **Long LLM calls** - Agent A calls LLM while Agent B completes and wants to write
+
+Solution: `proper-lockfile` library serializes all writes.
+
+**Why a single file causes conflicts (even for different sessions):**
+
+```
+sessions.json
+┌──────────────────────────────────────────────────┐
+│ {                                                 │
+│   "agent:main:telegram:group:-100123": {          │  ← Telegram wants to update
+│     "updatedAt": 1234567890,                      │
+│     "inputTokens": 1000                           │
+│   },                                              │
+│   "agent:main:discord:channel:456": {             │  ← Discord wants to update
+│     "updatedAt": 1234567891,                      │
+│     "inputTokens": 2000                           │
+│   }                                               │
+│ }                                                 │
+└──────────────────────────────────────────────────┘
+```
+
+Even though they modify **different keys**, the write operation replaces the **entire file**, so the later write overwrites the earlier one's changes.
+
+**Alternative Architecture: Per-Session Files**
+
+Splitting each session into its own file would eliminate cross-session write conflicts:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Single file** (current) | Fast queries (list all sessions), simple | Requires file locking |
+| **Per-session files** | No cross-session conflicts | Directory traversal for listing, more file handles |
+| **SQLite/Database** | Row-level writes, ACID transactions | More complex setup |
+
+> **Note:** This is a design trade-off. The current single-file approach with proper locking works correctly, but a per-session file architecture would be more naturally concurrent-safe.
+
 ```typescript
 // Core data structure
 type SessionEntry = {
@@ -291,7 +529,17 @@ resolveAgentIdFromSessionKey("agent:research:cron:daily")
 
 ### 4. Transcript Manager (`src/config/sessions/transcript.ts`)
 
-Manages reading and writing of conversation history stored in JSONL format.
+Manages reading and writing of conversation history stored in JSONL format. The transcript file is the complete record of a session's conversation.
+
+**Storage Location:**
+
+```
+~/.openclaw/agents/{agentId}/sessions/{sessionId}.jsonl
+```
+
+Example: `~/.openclaw/agents/main/sessions/104bf722-75e1-449a-8194-ddabc98a7908.jsonl`
+
+The `sessionFile` field in `SessionEntry` points to this transcript file.
 
 ```mermaid
 flowchart LR
@@ -314,19 +562,227 @@ flowchart LR
     JSONL --> Parse
 ```
 
-**JSONL Format:**
+**Complete JSONL Structure:**
 
 ```jsonl
-{"message":{"role":"user","content":"Hello"},"timestamp":1707800000000}
-{"message":{"role":"assistant","content":"Hi!"},"timestamp":1707800001000}
-{"type":"compaction","id":"abc-123","timestamp":"2024-02-13T10:00:00Z"}
-{"message":{"role":"user","content":"What's next?"},"timestamp":1707800100000}
+// Session header (first line)
+{"type":"session","version":3,"id":"104bf722...","timestamp":"2026-01-31T14:58:20Z","cwd":"/Users/user/workspace"}
+
+// Model/config changes
+{"type":"model_change","provider":"anthropic","modelId":"claude-opus-4-5","timestamp":"..."}
+{"type":"thinking_level_change","thinkingLevel":"low","timestamp":"..."}
+
+// Custom events (cache tracking, etc.)
+{"type":"custom","customType":"openclaw.cache-ttl","data":{...},"timestamp":"..."}
+{"type":"custom","customType":"model-snapshot","data":{...},"timestamp":"..."}
+
+// User message
+{"type":"user_message","content":[{"type":"text","text":"Hello"}],"timestamp":...}
+
+// Assistant response with tool use
+{"type":"assistant_message","content":[...],"usage":{"input":100,"output":50},"timestamp":...}
+{"type":"tool_use","name":"exec","input":{"command":"ls"},"timestamp":...}
+{"type":"tool_result","output":"file1.txt\nfile2.txt","timestamp":...}
+
+// Compaction marker (context was compressed)
+{"type":"compaction","id":"abc123","summary":"## Goal\n...","firstKeptEntryId":"xyz","tokensBefore":180000,"timestamp":"..."}
 ```
 
+**Write Sources (who writes to transcript):**
+
+| Module | What it writes |
+|--------|----------------|
+| `agents/pi-embedded-runner/run/attempt.ts` | Messages, tool calls, responses |
+| `agents/pi-embedded-runner/compact.ts` | Compaction summaries |
+| `config/sessions/transcript.ts` | Outbound message mirrors |
+| `gateway/server-methods/chat.ts` | Gateway API messages |
+
+**Read Sources (who reads from transcript):**
+
+| Module | Purpose |
+|--------|---------|
+| `pi-embedded-runner` | Load history as context for LLM |
+| `compact.ts` | Read messages for compaction |
+| `gateway/chat.ts` | `/history` API endpoint |
+| `auto-reply/session.ts` | Subagent inherits parent context |
+
 **Key Operations:**
-- **Append-only writes** for durability
+- **Append-only writes** for durability (file is never truncated)
 - **Streaming reads** for large transcripts
 - **Compaction markers** to track context compression events
+
+**Lifecycle:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: First message arrives
+    Created --> Active: Header written
+    Active --> Active: appendMessage()
+    Active --> Compacted: Context limit reached
+    Compacted --> Active: Summary written, continue
+    Active --> Archived: /new or /reset
+    Archived --> [*]: sessionRetention expires
+```
+
+1. **Created**: First message triggers `ensureSessionHeader()` - writes session metadata
+2. **Active**: Each message appended via `SessionManager.appendMessage()`
+3. **Compacted**: When context exceeds limit, compaction writes summary and marks old messages
+4. **Archived**: On reset, new sessionId created, old transcript kept for history
+5. **Cleaned**: After `sessionRetention` period, old transcripts may be deleted
+
+**Transcript and KV Cache:**
+
+The transcript content is loaded and sent to the LLM as conversation history:
+
+```
+transcript.jsonl
+      │
+      ▼ SessionManager.buildSessionContext()
+┌─────────────────┐
+│ messages: [     │
+│   {role: user}  │  ← old messages (prefix)
+│   {role: asst}  │  ← old messages (prefix)
+│   {role: user}  │  ← new message
+│ ]               │
+└────────┬────────┘
+         │
+         ▼ LLM API
+   [system + messages]
+```
+
+**Why append-only transcript is cache-friendly:**
+
+```
+Request 1: [system] [msg1] [msg2] [msg3]
+                    └──────────────┘
+                       cacheable prefix
+
+Request 2: [system] [msg1] [msg2] [msg3] [msg4]
+                    └──────────────┘ ← cache hit!
+                                     └──┘ only compute new part
+```
+
+Since transcript is **append-only**, the message prefix naturally remains stable across requests, which is exactly what LLM providers need for KV cache reuse.
+
+**Cache-breaking scenarios:**
+
+| Scenario | Impact |
+|----------|--------|
+| **Compaction** | History replaced with summary → entire prefix changes |
+| **Context pruning** | Old messages trimmed → prefix changes |
+| **Workspace files change** | System prompt content changes → prefix changes |
+| **Tool result truncation** | Old tool results truncated on reload → prefix changes |
+
+**Scenario 1: Compaction**
+
+When conversation history approaches the model's context limit (~180k tokens for Claude), OpenClaw triggers compaction:
+
+```
+Before compaction:
+[system] [msg1] [msg2] [msg3] ... [msg50] [msg51]
+         └─────────────────────────────────────┘
+                    180k tokens (full!)
+
+After compaction:
+[system] [summary: "User discussed X, Y, Z..."] [msg51]
+         └──────────────────────────────────────────┘
+                    ~20k tokens (fresh start)
+```
+
+**Trigger**: `contextTokens > model.contextWindow * threshold` (typically 90%)
+
+The entire message prefix is replaced with a summary, invalidating all cached KV states.
+
+**Scenario 2: Context Pruning**
+
+With `contextPruning.mode: "aggressive"` or after cache TTL expires in `cache-ttl` mode:
+
+```
+Before pruning:
+[system] [old_msg1] [old_msg2] [recent_msg1] [recent_msg2] [new_msg]
+         └─────────────────────────────────────────────────────────┘
+
+After pruning (keepLastAssistants: 3):
+[system] [recent_msg1] [recent_msg2] [new_msg]
+         └────────────────────────────────────┘
+```
+
+**Trigger**: 
+- `contextPruning.mode: "aggressive"` — prune every turn
+- `contextPruning.mode: "cache-ttl"` + TTL expired — prune after cache expires
+
+Old messages are removed to reduce token cost, but this changes the prefix.
+
+**Scenario 3: Workspace Files Change**
+
+OpenClaw injects workspace files (AGENTS.md, MEMORY.md, etc.) into the system prompt:
+
+```
+Turn 1:
+[system: "...MEMORY.md content: 'User likes Python'..."] [msg1] [msg2]
+
+Turn 2 (after user edited MEMORY.md):
+[system: "...MEMORY.md content: 'User likes Python and Rust'..."] [msg1] [msg2] [msg3]
+         └──────────────────────────────────────────────────────┘
+                              System prompt changed!
+```
+
+**Trigger**: User edits any workspace file between turns (AGENTS.md, MEMORY.md, SOUL.md, etc.)
+
+Even though messages didn't change, the system prompt prefix is different.
+
+**Scenario 4: Tool Result Truncation**
+
+Long tool results are stored in full but may be truncated when reloaded for context:
+
+```
+Original tool result (stored in transcript):
+{"type":"tool_result","output":"... 50,000 characters of code ..."}
+
+Reloaded for next turn (truncated):
+{"type":"tool_result","output":"[first 1500 chars]...[truncated]...[last 1500 chars]"}
+```
+
+**Trigger**: `contextPruning.softTrim` or `hardClear` settings
+
+```json
+{
+  "contextPruning": {
+    "softTrim": {
+      "maxChars": 4000,
+      "headChars": 1500,
+      "tailChars": 1500
+    },
+    "hardClear": {
+      "enabled": true,
+      "placeholder": "[Old tool result cleared]"
+    }
+  }
+}
+```
+
+The same transcript produces different message content on reload, breaking cache.
+
+**Mitigation: `contextPruning.mode: "cache-ttl"`**
+
+OpenClaw provides a `cache-ttl` mode that keeps the prefix stable within the cache TTL window:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "5m"
+      }
+    }
+  }
+}
+```
+
+This defers context pruning until the cache TTL expires, maximizing cache hit rate while still managing context length over time.
+
+> **Summary:** The append-only transcript design is inherently cache-friendly, but compaction and pruning operations break cache continuity. The `cache-ttl` mode provides a balance between cost optimization (cache reuse) and context management.
 
 ### 5. Session Reset (`src/config/sessions/reset.ts`)
 
@@ -435,15 +891,32 @@ agent:main:main
 
 ### Common Session Key Patterns
 
+**Group/Channel Sessions** (consistent format):
+
+```
+agent:{agentId}:{channel}:{peerKind}:{peerId}
+```
+
 | Type | Format | Example |
 |------|--------|---------|
-| Main Session | `agent:{agentId}:main` | `agent:main:main` |
-| Direct Chat | `agent:{agentId}:{channel}:{userId}` | `agent:main:telegram:6813060849` |
-| Group Chat | `agent:{agentId}:{channel}:group:{groupId}` | `agent:main:discord:group:123456` |
-| Channel | `agent:{agentId}:{channel}:channel:{channelId}` | `agent:main:telegram:channel:-100123` |
+| Telegram Group | `agent:{agentId}:telegram:group:{chatId}` | `agent:main:telegram:group:-100123456` |
+| Telegram Forum Topic | `agent:{agentId}:telegram:group:{chatId}:topic:{topicId}` | `agent:main:telegram:group:-100123456:topic:42` |
+| Discord Channel | `agent:{agentId}:discord:channel:{channelId}` | `agent:main:discord:channel:123456789` |
+| Discord Group DM | `agent:{agentId}:discord:group:{channelId}` | `agent:main:discord:group:789` |
 | Cron Job | `agent:{agentId}:cron:{jobId}` | `agent:main:cron:daily-check` |
 | Cron Run | `agent:{agentId}:cron:{jobId}:run:{uuid}` | `agent:main:cron:daily-check:run:abc-123` |
 | Subagent | `agent:{agentId}:subagent:{label}:{uuid}` | `agent:main:subagent:researcher:def-456` |
+
+**DM Sessions** (depends on `dmScope` configuration):
+
+| dmScope | Format | Example |
+|---------|--------|---------|
+| `"main"` (default) | `agent:{agentId}:main` | `agent:main:main` |
+| `"per-peer"` | `agent:{agentId}:direct:{peerId}` | `agent:main:direct:123` |
+| `"per-channel-peer"` | `agent:{agentId}:{channel}:direct:{peerId}` | `agent:main:telegram:direct:123` |
+| `"per-account-channel-peer"` | `agent:{agentId}:{channel}:{accountId}:direct:{peerId}` | `agent:main:telegram:default:direct:123` |
+
+> **Important:** With default `dmScope: "main"`, all DMs across all channels route to the **same main session**. This allows seamless conversation continuity but means Telegram DMs and Discord DMs share context. If you need per-user isolation, configure `dmScope: "per-channel-peer"`.
 
 ### Key Resolution Flow
 
@@ -513,22 +986,37 @@ flowchart TB
 ### Code Example
 
 ```typescript
-// src/routing/session-key.ts
+// src/routing/session-key.ts (simplified)
 function buildAgentPeerSessionKey(params: {
   agentId: string,
   channel: string,      // "telegram"
-  peerId: string,       // "6813060849" ← User ID from channel
-  peerKind: ChatType,   // "direct"
+  peerId: string | null,
+  peerKind: ChatType,   // "direct" | "group" | "channel"
+  dmScope?: "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer",
 }) {
-  // User ID becomes part of the session key
-  return `agent:${agentId}:${channel}:${peerId}`;
+  // For DMs, routing depends on dmScope
+  if (peerKind === "direct") {
+    const dmScope = params.dmScope ?? "main";
+    if (dmScope === "main") {
+      return `agent:${agentId}:main`;  // All DMs share main session
+    }
+    if (dmScope === "per-channel-peer") {
+      return `agent:${agentId}:${channel}:direct:${peerId}`;
+    }
+    // ... other dmScope options
+  }
+  
+  // For groups/channels, include peerKind in the key
+  return `agent:${agentId}:${channel}:${peerKind}:${peerId}`;
 }
 
-// Result: "agent:main:telegram:6813060849"
-// Each user gets their own unique session key
+// Examples:
+// DM (default):  "agent:main:main"
+// DM (per-channel-peer): "agent:main:telegram:direct:6813060849"
+// Group: "agent:main:telegram:group:-100123456"
 ```
 
-> **Key Point:** The channel provides the user ID → it becomes part of the Session Key → different users are automatically isolated into separate sessions.
+> **Key Point:** With default `dmScope: "main"`, all DMs route to the same main session. For groups/channels, the session key includes the peerKind and peerId, providing automatic isolation per group.
 
 ---
 
@@ -552,21 +1040,86 @@ Restrict which users can interact with your bot:
 }
 ```
 
-### 2. DM vs Group Permission Separation
+### 2. DM Policy and Pairing
 
-Configure different policies for private chats and groups:
+Configure how the bot handles DMs from unknown users:
+
+**dmPolicy Options:**
+
+| Value | Behavior |
+|-------|----------|
+| `"pairing"` | Unknown senders trigger pairing flow (secure, recommended) |
+| `"allowlist"` | Unknown senders silently ignored |
+| `"open"` | Anyone can DM (not recommended for public bots) |
 
 ```json
 {
-  "telegram": {
-    "accounts": [{
-      "token": "...",
-      "dm": "allowlist",              // DMs: only allowlisted users
-      "dmAllowlist": ["6813060849"],
-      "groups": "mention"             // Groups: only respond when @mentioned
-    }]
+  "channels": {
+    "telegram": {
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist"
+    }
   }
 }
+```
+
+**Pairing Flow (when `dmPolicy: "pairing"`):**
+
+```mermaid
+sequenceDiagram
+    participant S as Stranger
+    participant B as Bot
+    participant P as Pairing Store
+    participant O as Owner (CLI)
+    participant A as AllowFrom Store
+    
+    S->>B: Sends DM
+    B->>P: Generate pairing code
+    P-->>B: Code: PAIRME12
+    B->>S: "Pairing code: PAIRME12<br/>Run: openclaw pairing approve telegram PAIRME12"
+    
+    Note over O: Owner runs CLI command
+    O->>A: openclaw pairing approve telegram PAIRME12
+    A-->>O: User added to allowlist
+    
+    S->>B: Sends another DM
+    B->>A: Check allowlist
+    A-->>B: User allowed
+    B->>S: Normal response
+```
+
+**Step-by-step:**
+
+1. **Stranger sends DM** to your bot
+2. **Bot returns pairing info:**
+   ```
+   👋 Hi! I don't recognize you yet.
+   
+   Your Telegram user id: 6813060849
+   Pairing code: PAIRME12
+   
+   To connect, run on your machine:
+   openclaw pairing approve telegram PAIRME12
+   ```
+3. **Owner approves** on local machine:
+   ```bash
+   openclaw pairing approve telegram PAIRME12
+   ```
+4. **User added to allowlist** - stored in `~/.openclaw/credentials/telegram-allowFrom.json`
+5. **Future DMs work normally**
+
+**Pairing CLI Commands:**
+
+```bash
+# List pending pairing requests
+openclaw pairing list telegram
+
+# Approve a pairing request
+openclaw pairing approve telegram PAIRME12
+
+# Related files
+~/.openclaw/credentials/telegram-pairing.json    # Pending requests
+~/.openclaw/credentials/telegram-allowFrom.json  # Approved users
 ```
 
 ### 3. Group Activation Modes
