@@ -673,6 +673,96 @@ Since transcript is **append-only**, the message prefix naturally remains stable
 | **Workspace files change** | System prompt content changes → prefix changes |
 | **Tool result truncation** | Old tool results truncated on reload → prefix changes |
 
+**Scenario 1: Compaction**
+
+When conversation history approaches the model's context limit (~180k tokens for Claude), OpenClaw triggers compaction:
+
+```
+Before compaction:
+[system] [msg1] [msg2] [msg3] ... [msg50] [msg51]
+         └─────────────────────────────────────┘
+                    180k tokens (full!)
+
+After compaction:
+[system] [summary: "User discussed X, Y, Z..."] [msg51]
+         └──────────────────────────────────────────┘
+                    ~20k tokens (fresh start)
+```
+
+**Trigger**: `contextTokens > model.contextWindow * threshold` (typically 90%)
+
+The entire message prefix is replaced with a summary, invalidating all cached KV states.
+
+**Scenario 2: Context Pruning**
+
+With `contextPruning.mode: "aggressive"` or after cache TTL expires in `cache-ttl` mode:
+
+```
+Before pruning:
+[system] [old_msg1] [old_msg2] [recent_msg1] [recent_msg2] [new_msg]
+         └─────────────────────────────────────────────────────────┘
+
+After pruning (keepLastAssistants: 3):
+[system] [recent_msg1] [recent_msg2] [new_msg]
+         └────────────────────────────────────┘
+```
+
+**Trigger**: 
+- `contextPruning.mode: "aggressive"` — prune every turn
+- `contextPruning.mode: "cache-ttl"` + TTL expired — prune after cache expires
+
+Old messages are removed to reduce token cost, but this changes the prefix.
+
+**Scenario 3: Workspace Files Change**
+
+OpenClaw injects workspace files (AGENTS.md, MEMORY.md, etc.) into the system prompt:
+
+```
+Turn 1:
+[system: "...MEMORY.md content: 'User likes Python'..."] [msg1] [msg2]
+
+Turn 2 (after user edited MEMORY.md):
+[system: "...MEMORY.md content: 'User likes Python and Rust'..."] [msg1] [msg2] [msg3]
+         └──────────────────────────────────────────────────────┘
+                              System prompt changed!
+```
+
+**Trigger**: User edits any workspace file between turns (AGENTS.md, MEMORY.md, SOUL.md, etc.)
+
+Even though messages didn't change, the system prompt prefix is different.
+
+**Scenario 4: Tool Result Truncation**
+
+Long tool results are stored in full but may be truncated when reloaded for context:
+
+```
+Original tool result (stored in transcript):
+{"type":"tool_result","output":"... 50,000 characters of code ..."}
+
+Reloaded for next turn (truncated):
+{"type":"tool_result","output":"[first 1500 chars]...[truncated]...[last 1500 chars]"}
+```
+
+**Trigger**: `contextPruning.softTrim` or `hardClear` settings
+
+```json
+{
+  "contextPruning": {
+    "softTrim": {
+      "maxChars": 4000,
+      "headChars": 1500,
+      "tailChars": 1500
+    },
+    "hardClear": {
+      "enabled": true,
+      "placeholder": "[Old tool result cleared]"
+    }
+  }
+}
+```
+
+The same transcript produces different message content on reload, breaking cache.
+
 **Mitigation: `contextPruning.mode: "cache-ttl"`**
 
 OpenClaw provides a `cache-ttl` mode that keeps the prefix stable within the cache TTL window:
