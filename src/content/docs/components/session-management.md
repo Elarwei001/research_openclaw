@@ -630,6 +630,70 @@ stateDiagram-v2
 4. **Archived**: On reset, new sessionId created, old transcript kept for history
 5. **Cleaned**: After `sessionRetention` period, old transcripts may be deleted
 
+**Transcript and KV Cache:**
+
+The transcript content is loaded and sent to the LLM as conversation history:
+
+```
+transcript.jsonl
+      │
+      ▼ SessionManager.buildSessionContext()
+┌─────────────────┐
+│ messages: [     │
+│   {role: user}  │  ← old messages (prefix)
+│   {role: asst}  │  ← old messages (prefix)
+│   {role: user}  │  ← new message
+│ ]               │
+└────────┬────────┘
+         │
+         ▼ LLM API
+   [system + messages]
+```
+
+**Why append-only transcript is cache-friendly:**
+
+```
+Request 1: [system] [msg1] [msg2] [msg3]
+                    └──────────────┘
+                       cacheable prefix
+
+Request 2: [system] [msg1] [msg2] [msg3] [msg4]
+                    └──────────────┘ ← cache hit!
+                                     └──┘ only compute new part
+```
+
+Since transcript is **append-only**, the message prefix naturally remains stable across requests, which is exactly what LLM providers need for KV cache reuse.
+
+**Cache-breaking scenarios:**
+
+| Scenario | Impact |
+|----------|--------|
+| **Compaction** | History replaced with summary → entire prefix changes |
+| **Context pruning** | Old messages trimmed → prefix changes |
+| **Workspace files change** | System prompt content changes → prefix changes |
+| **Tool result truncation** | Old tool results truncated on reload → prefix changes |
+
+**Mitigation: `contextPruning.mode: "cache-ttl"`**
+
+OpenClaw provides a `cache-ttl` mode that keeps the prefix stable within the cache TTL window:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "5m"
+      }
+    }
+  }
+}
+```
+
+This defers context pruning until the cache TTL expires, maximizing cache hit rate while still managing context length over time.
+
+> **Summary:** The append-only transcript design is inherently cache-friendly, but compaction and pruning operations break cache continuity. The `cache-ttl` mode provides a balance between cost optimization (cache reuse) and context management.
+
 ### 5. Session Reset (`src/config/sessions/reset.ts`)
 
 Handles session reset logic triggered by commands or idle timeout.
