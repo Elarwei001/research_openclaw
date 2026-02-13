@@ -1,41 +1,46 @@
+---
+title: "Session Management"
+description: "Session is the core concept of OpenClaw, managing conversation state, context, token usage, and cache optimization between users and agents."
+---
+
 # Session Management
 
-Session 是 OpenClaw 的核心概念，负责管理用户与 Agent 之间的对话状态、上下文、token 使用和 cache 优化。
+Session is the core concept of OpenClaw, responsible for managing conversation state, context, token usage, and cache optimization between users and agents.
 
-## 目录
+## Table of Contents
 
-1. [概述](#概述)
-2. [Session 架构](#session-架构)
-3. [核心模块](#核心模块)
-4. [Session Key 体系](#session-key-体系)
-5. [消息流转与协作](#消息流转与协作)
-6. [Token 管理](#token-管理)
-7. [Cache 管理](#cache-管理)
-8. [Session 生命周期](#session-生命周期)
+1. [Overview](#overview)
+2. [Session Architecture](#session-architecture)
+3. [Core Modules](#core-modules)
+4. [Session Key System](#session-key-system)
+5. [Message Flow and Collaboration](#message-flow-and-collaboration)
+6. [Token Management](#token-management)
+7. [Cache Management](#cache-management)
+8. [Session Lifecycle](#session-lifecycle)
 
 ---
 
-## 概述
+## Overview
 
-Session 可以理解为一次"对话会话"，它包含：
+A Session can be understood as a "conversation session" that contains:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         Session                              │
 ├─────────────────────────────────────────────────────────────┤
-│  • sessionId: UUID 唯一标识                                  │
-│  • sessionKey: 路由键 (e.g., "agent:main:main")             │
-│  • 对话历史 (transcript)                                     │
-│  • Token 使用统计                                            │
-│  • Model/Provider 配置                                       │
-│  • 用户偏好 (thinking level, verbose mode...)               │
-│  • 投递上下文 (channel, to, accountId...)                   │
+│  • sessionId: UUID unique identifier                         │
+│  • sessionKey: routing key (e.g., "agent:main:main")        │
+│  • conversation history (transcript)                         │
+│  • token usage statistics                                    │
+│  • model/provider configuration                              │
+│  • user preferences (thinking level, verbose mode...)       │
+│  • delivery context (channel, to, accountId...)             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Session 架构
+## Session Architecture
 
-### 整体架构图
+### Overall Architecture Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -50,8 +55,8 @@ Session 可以理解为一次"对话会话"，它包含：
 │          └──────────────────┼──────────────────┘                      │
 │                             ▼                                         │
 │                    ┌─────────────────┐                               │
-│                    │  Session Router │  ← 根据消息来源路由到对应 Session│
-│                    └────────┬────────┘                               │
+│                    │  Session Router │  ← Routes to session based    │
+│                    └────────┬────────┘    on message source          │
 │                             │                                         │
 │          ┌──────────────────┼──────────────────┐                      │
 │          ▼                  ▼                  ▼                      │
@@ -64,84 +69,84 @@ Session 可以理解为一次"对话会话"，它包含：
 │          └──────────────────┼──────────────────┘                      │
 │                             ▼                                         │
 │                    ┌─────────────────┐                               │
-│                    │  Session Store  │  ← sessions.json 持久化        │
+│                    │  Session Store  │  ← Persisted in sessions.json │
 │                    └─────────────────┘                               │
 │                             │                                         │
 │                             ▼                                         │
 │                    ┌─────────────────┐                               │
-│                    │   Transcript    │  ← .jsonl 文件存储对话历史     │
+│                    │   Transcript    │  ← .jsonl files for history   │
 │                    │     Files       │                               │
 │                    └─────────────────┘                               │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## 核心模块
+## Core Modules
 
 ### 1. Session Store (`src/config/sessions/store.ts`)
 
-负责 Session 元数据的持久化存储。
+Responsible for persistent storage of session metadata.
 
 ```typescript
-// 核心数据结构
+// Core data structure
 type SessionEntry = {
   sessionId: string;          // UUID
-  updatedAt: number;          // 最后更新时间戳
-  sessionFile?: string;       // transcript 文件路径
+  updatedAt: number;          // Last update timestamp
+  sessionFile?: string;       // Transcript file path
   
-  // Token 统计
+  // Token statistics
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
-  totalTokensFresh?: boolean; // token 数据是否是最新的
-  contextTokens?: number;     // 模型上下文窗口大小
+  totalTokensFresh?: boolean; // Whether token data is fresh
+  contextTokens?: number;     // Model context window size
   
-  // Model 配置
+  // Model configuration
   modelProvider?: string;
   model?: string;
   providerOverride?: string;
   modelOverride?: string;
   
-  // 用户偏好
+  // User preferences
   thinkingLevel?: string;     // off/low/medium/high
   verboseLevel?: string;
   sendPolicy?: "allow" | "deny";
   
-  // 投递上下文
+  // Delivery context
   lastChannel?: string;
   lastTo?: string;
   lastAccountId?: string;
   deliveryContext?: DeliveryContext;
   
-  // ...更多字段
+  // ...more fields
 };
 ```
 
-**存储位置：**
+**Storage Location:**
 ```
 ~/.openclaw/
 ├── sessions/
-│   └── sessions.json          # Session 元数据
+│   └── sessions.json          # Session metadata
 ├── agents/
 │   ├── main/
 │   │   └── sessions/
 │   │       ├── sessions.json  # Agent-specific sessions
-│   │       └── *.jsonl        # Transcript 文件
+│   │       └── *.jsonl        # Transcript files
 │   └── {agent-id}/
 │       └── sessions/
 ```
 
 ### 2. Session Types (`src/config/sessions/types.ts`)
 
-定义 Session 的类型和工具函数。
+Defines session types and utility functions.
 
 ```typescript
-// Session 作用域
+// Session scope
 type SessionScope = "per-sender" | "global";
 
-// 聊天类型
+// Chat type
 type SessionChatType = "direct" | "group" | "channel";
 
-// Session 来源信息
+// Session origin information
 type SessionOrigin = {
   label?: string;
   provider?: string;      // telegram, discord, etc.
@@ -155,32 +160,32 @@ type SessionOrigin = {
 
 ### 3. Session Router (`src/routing/session-key.ts`)
 
-负责将消息路由到正确的 Session。
+Routes messages to the correct session.
 
 ### 4. Transcript Manager (`src/config/sessions/transcript.ts`)
 
-管理对话历史的读写。
+Manages reading and writing of conversation history.
 
 ### 5. Session Reset (`src/config/sessions/reset.ts`)
 
-处理 Session 重置逻辑（/new, /reset 命令）。
+Handles session reset logic (/new, /reset commands).
 
 ---
 
-## Session Key 体系
+## Session Key System
 
-Session Key 是 Session 的路由标识符，采用层级结构：
+Session Key is the routing identifier for sessions, using a hierarchical structure:
 
-### Key 格式
+### Key Format
 
 ```
 agent:{agentId}:{sessionType}:{identifier}
 ```
 
-### 常见 Session Key 类型
+### Common Session Key Types
 
-| 类型 | 格式 | 示例 |
-|------|------|------|
+| Type | Format | Example |
+|------|--------|---------|
 | Main Session | `agent:{agentId}:main` | `agent:main:main` |
 | Direct Chat | `agent:{agentId}:{channel}:{userId}` | `agent:main:telegram:123456` |
 | Group Chat | `agent:{agentId}:{channel}:group:{groupId}` | `agent:main:discord:group:789` |
@@ -188,14 +193,14 @@ agent:{agentId}:{sessionType}:{identifier}
 | Cron Run | `agent:{agentId}:cron:{jobId}:run:{uuid}` | `agent:main:cron:daily-check:run:abc-123` |
 | Subagent | `agent:{agentId}:subagent:{label}:{uuid}` | `agent:main:subagent:researcher:def-456` |
 
-### Key 解析流程
+### Key Resolution Flow
 
 ```
-用户消息到达
+User message arrives
      │
      ▼
 ┌─────────────────────────────────────┐
-│  1. 提取消息上下文                   │
+│  1. Extract message context          │
 │     - channel (telegram/discord/..) │
 │     - chatType (direct/group)       │
 │     - senderId                      │
@@ -204,14 +209,14 @@ agent:{agentId}:{sessionType}:{identifier}
                   │
                   ▼
 ┌─────────────────────────────────────┐
-│  2. 确定 Agent ID                    │
-│     - 从 channel binding 配置        │
-│     - 或使用默认 agent (main)        │
+│  2. Determine Agent ID               │
+│     - From channel binding config    │
+│     - Or use default agent (main)    │
 └─────────────────┬───────────────────┘
                   │
                   ▼
 ┌─────────────────────────────────────┐
-│  3. 构建 Session Key                 │
+│  3. Build Session Key                │
 │     buildAgentPeerSessionKey({      │
 │       agentId,                      │
 │       channel,                      │
@@ -222,7 +227,7 @@ agent:{agentId}:{sessionType}:{identifier}
                   │
                   ▼
 ┌─────────────────────────────────────┐
-│  4. 加载或创建 Session Entry         │
+│  4. Load or create Session Entry     │
 │     loadSessionStore(storePath)     │
 │     store[sessionKey]               │
 └─────────────────────────────────────┘
@@ -230,68 +235,68 @@ agent:{agentId}:{sessionType}:{identifier}
 
 ---
 
-## 消息流转与协作
+## Message Flow and Collaboration
 
-### 单次请求流程
+### Single Request Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                        用户发送消息                                   │
+│                        User sends message                             │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  1. Channel Handler 接收消息                                          │
-│     - 解析消息内容、发送者信息                                         │
-│     - 判断是否需要响应 (group activation, mentions...)               │
+│  1. Channel Handler receives message                                  │
+│     - Parse message content, sender info                              │
+│     - Determine if response needed (group activation, mentions...)   │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  2. Session Resolution                                                │
-│     - 根据消息上下文计算 sessionKey                                   │
-│     - 从 sessions.json 加载 SessionEntry                             │
-│     - 如果不存在，创建新的 SessionEntry                               │
+│     - Calculate sessionKey from message context                       │
+│     - Load SessionEntry from sessions.json                           │
+│     - Create new SessionEntry if not exists                          │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  3. 消息入队 (Message Queue)                                          │
-│     - 检查队列模式 (steer/followup/collect/queue)                    │
-│     - 防抖处理 (debounce)                                            │
-│     - 队列容量检查                                                    │
+│  3. Message Queue                                                     │
+│     - Check queue mode (steer/followup/collect/queue)                │
+│     - Debounce handling                                               │
+│     - Queue capacity check                                            │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  4. Agent Turn 执行                                                   │
-│     a. 加载 Transcript (对话历史)                                     │
-│     b. 构建 System Prompt (workspace files, skills, tools...)        │
-│     c. Token 预算检查 → 可能触发 Compaction                          │
-│     d. 调用 LLM Provider                                             │
-│     e. 处理工具调用 (如有)                                            │
-│     f. 生成响应                                                       │
+│  4. Agent Turn Execution                                              │
+│     a. Load transcript (conversation history)                         │
+│     b. Build system prompt (workspace files, skills, tools...)       │
+│     c. Token budget check → may trigger Compaction                   │
+│     d. Call LLM Provider                                             │
+│     e. Process tool calls (if any)                                   │
+│     f. Generate response                                              │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  5. 响应投递                                                          │
-│     - 根据 SessionEntry.deliveryContext 确定投递目标                 │
-│     - 通过对应 Channel 发送响应                                       │
+│  5. Response Delivery                                                 │
+│     - Determine delivery target from SessionEntry.deliveryContext    │
+│     - Send response through corresponding channel                    │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  6. Session 更新                                                      │
-│     - 更新 transcript 文件 (追加消息)                                 │
-│     - 更新 SessionEntry (tokens, updatedAt, ...)                     │
-│     - 持久化到 sessions.json                                          │
+│  6. Session Update                                                    │
+│     - Update transcript file (append messages)                       │
+│     - Update SessionEntry (tokens, updatedAt, ...)                   │
+│     - Persist to sessions.json                                       │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 多 Session 协作场景
+### Multi-Session Collaboration Scenarios
 
-#### 场景 1: Subagent 调用
+#### Scenario 1: Subagent Invocation
 
 ```
 ┌─────────────┐         ┌─────────────┐
@@ -302,14 +307,14 @@ agent:{agentId}:{sessionType}:{identifier}
        │  sessions_spawn()     │
        │──────────────────────▶│
        │                       │
-       │                       │ 执行任务
+       │                       │ Execute task
        │                       │
-       │  结果通过 announce    │
+       │  Result via announce  │
        │◀──────────────────────│
        │                       │
 ```
 
-#### 场景 2: Cron Isolated Session
+#### Scenario 2: Cron Isolated Session
 
 ```
 ┌─────────────┐         ┌─────────────┐
@@ -317,15 +322,15 @@ agent:{agentId}:{sessionType}:{identifier}
 │  Session    │         │  Isolated   │
 └──────┬──────┘         └──────┬──────┘
        │                       │
-       │                       │ Cron 触发
-       │                       │──────────▶ 独立执行 agentTurn
+       │                       │ Cron triggers
+       │                       │──────────▶ Execute agentTurn independently
        │                       │
-       │  announce (可选)      │
-       │◀──────────────────────│ 发送摘要到 main
+       │  announce (optional)  │
+       │◀──────────────────────│ Send summary to main
        │                       │
 ```
 
-#### 场景 3: 跨 Agent 会话
+#### Scenario 3: Cross-Agent Sessions
 
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
@@ -345,36 +350,36 @@ agent:{agentId}:{sessionType}:{identifier}
 
 ---
 
-## Token 管理
+## Token Management
 
-### Token 统计字段
+### Token Statistics Fields
 
 ```typescript
 interface SessionEntry {
-  inputTokens?: number;      // 累计输入 tokens
-  outputTokens?: number;     // 累计输出 tokens
-  totalTokens?: number;      // 当前上下文 tokens (估算)
-  totalTokensFresh?: boolean;// 是否是最新的
-  contextTokens?: number;    // 模型上下文窗口大小
+  inputTokens?: number;      // Cumulative input tokens
+  outputTokens?: number;     // Cumulative output tokens
+  totalTokens?: number;      // Current context tokens (estimated)
+  totalTokensFresh?: boolean;// Whether it's up-to-date
+  contextTokens?: number;    // Model context window size
 }
 ```
 
-### Token 计算流程
+### Token Calculation Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                     Agent Turn 开始                                   │
+│                     Agent Turn starts                                 │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  1. 加载历史消息                                                       │
+│  1. Load history messages                                             │
 │     messages = readSessionMessages(sessionId, storePath)              │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  2. 估算当前 token 使用                                               │
+│  2. Estimate current token usage                                      │
 │     estimatedTokens = estimateMessagesTokens(messages)                │
 │     + systemPromptTokens                                              │
 │     + newMessageTokens                                                │
@@ -382,14 +387,14 @@ interface SessionEntry {
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  3. 检查是否超出上下文窗口                                            │
+│  3. Check if exceeds context window                                   │
 │     if (estimatedTokens > contextTokens * threshold)                  │
-│       → 触发 Compaction                                              │
+│       → Trigger Compaction                                           │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  4. LLM 调用后更新统计                                                │
+│  4. Update statistics after LLM call                                  │
 │     usage = response.usage                                            │
 │     sessionEntry.inputTokens += usage.input                          │
 │     sessionEntry.outputTokens += usage.output                        │
@@ -398,9 +403,9 @@ interface SessionEntry {
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Compaction (上下文压缩)
+### Compaction (Context Compression)
 
-当对话历史过长时，自动触发压缩：
+Automatically triggered when conversation history becomes too long:
 
 ```typescript
 // src/agents/compaction.ts
@@ -410,99 +415,99 @@ async function compactSession(params: {
   contextTokens: number;
   reserveTokens: number;
 }) {
-  // 1. 计算需要压缩的消息范围
+  // 1. Calculate range of messages to compress
   const targetTokens = contextTokens - reserveTokens;
   
-  // 2. 将消息分块
+  // 2. Split messages into chunks
   const chunks = splitMessagesByTokenShare(messages, 2);
   
-  // 3. 生成每块的摘要
+  // 3. Generate summary for each chunk
   const summaries = await Promise.all(
     chunks.map(chunk => generateSummary(chunk))
   );
   
-  // 4. 合并摘要
+  // 4. Merge summaries
   const mergedSummary = await mergeSummaries(summaries);
   
-  // 5. 返回压缩后的消息 (摘要 + 最近消息)
+  // 5. Return compressed messages (summary + recent messages)
   return [summaryMessage, ...recentMessages];
 }
 ```
 
-**Compaction 策略：**
+**Compaction Strategies:**
 
-| 策略 | 说明 | 配置 |
-|------|------|------|
-| Auto | 自动在上下文接近限制时触发 | 默认 |
-| Manual | 通过 /compact 命令手动触发 | - |
-| Disabled | 禁用压缩，超限时报错 | `compaction.enabled: false` |
+| Strategy | Description | Configuration |
+|----------|-------------|---------------|
+| Auto | Automatically triggers when context approaches limit | Default |
+| Manual | Manually trigger via /compact command | - |
+| Disabled | Disable compression, error on overflow | `compaction.enabled: false` |
 
 ---
 
-## Cache 管理
+## Cache Management
 
-OpenClaw 支持多层 cache 策略，优化 token 使用和响应延迟。
+OpenClaw supports multi-layer cache strategies to optimize token usage and response latency.
 
 ### 1. Provider-Level Prompt Caching
 
-利用 LLM Provider 的原生 prompt caching 能力：
+Leverages native prompt caching capabilities of LLM providers:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                        Prompt 结构                                    │
+│                        Prompt Structure                               │
 ├──────────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────────────────────────┐                         │
-│  │  Static Prefix (可 cache)               │                         │
+│  │  Static Prefix (cacheable)              │                         │
 │  │  - System Prompt                        │  ← cache_control        │
 │  │  - Workspace Files                      │     breakpoint          │
 │  │  - Skills                               │                         │
 │  └─────────────────────────────────────────┘                         │
 │  ┌─────────────────────────────────────────┐                         │
-│  │  Dynamic Suffix (每次不同)              │                         │
-│  │  - 对话历史                             │                         │
-│  │  - 当前用户消息                         │                         │
+│  │  Dynamic Suffix (changes each time)     │                         │
+│  │  - Conversation history                 │                         │
+│  │  - Current user message                 │                         │
 │  └─────────────────────────────────────────┘                         │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**各 Provider Cache 方式：**
+**Provider Cache Methods:**
 
-| Provider | Cache 方式 | 配置 |
-|----------|-----------|------|
-| Anthropic 直连 | `cacheRetention` 参数 | `cacheRetention: "short"/"long"` |
-| OpenRouter + Anthropic | `cache_control` 块 | 自动添加 |
-| OpenAI | 自动 (无需配置) | - |
-| DeepSeek | 自动 (无需配置) | - |
-| Gemini 2.5+ | 自动 (无需配置) | - |
+| Provider | Cache Method | Configuration |
+|----------|-------------|---------------|
+| Anthropic Direct | `cacheRetention` parameter | `cacheRetention: "short"/"long"` |
+| OpenRouter + Anthropic | `cache_control` blocks | Automatic |
+| OpenAI | Automatic (no config needed) | - |
+| DeepSeek | Automatic (no config needed) | - |
+| Gemini 2.5+ | Automatic (no config needed) | - |
 
 ### 2. Session Store Cache
 
-Session 元数据的内存缓存：
+In-memory cache for session metadata:
 
 ```typescript
 // src/config/sessions/store.ts
 
 const SESSION_STORE_CACHE = new Map<string, SessionStoreCacheEntry>();
-const DEFAULT_SESSION_STORE_TTL_MS = 45_000; // 45 秒
+const DEFAULT_SESSION_STORE_TTL_MS = 45_000; // 45 seconds
 
 type SessionStoreCacheEntry = {
   store: Record<string, SessionEntry>;
   loadedAt: number;
   storePath: string;
-  mtimeMs?: number;  // 文件修改时间，用于失效检测
+  mtimeMs?: number;  // File modification time for invalidation
 };
 
 function loadSessionStore(storePath: string): Record<string, SessionEntry> {
-  // 1. 检查缓存
+  // 1. Check cache
   const cached = SESSION_STORE_CACHE.get(storePath);
   if (cached && isSessionStoreCacheValid(cached)) {
     return cached.store;
   }
   
-  // 2. 从文件加载
+  // 2. Load from file
   const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
   
-  // 3. 更新缓存
+  // 3. Update cache
   SESSION_STORE_CACHE.set(storePath, {
     store,
     loadedAt: Date.now(),
@@ -514,27 +519,27 @@ function loadSessionStore(storePath: string): Record<string, SessionEntry> {
 }
 ```
 
-### 3. Cache TTL 跟踪
+### 3. Cache TTL Tracking
 
-跟踪 cache 状态以优化 heartbeat 和 context pruning：
+Track cache state to optimize heartbeat and context pruning:
 
 ```typescript
 // src/agents/pi-embedded-runner/cache-ttl.ts
 
-// 记录最后一次 cache 时间戳
+// Record last cache timestamp
 function appendCacheTtlTimestamp(sessionManager, {
   timestamp: Date.now(),
   provider,
   modelId
 });
 
-// 检查 cache 是否仍然有效
+// Check if cache is still valid
 function isCacheStillValid(lastTimestamp: number, ttlMs: number): boolean {
   return Date.now() - lastTimestamp < ttlMs;
 }
 ```
 
-### Cache 优化配置示例
+### Cache Optimization Configuration Example
 
 ```json
 {
@@ -561,42 +566,44 @@ function isCacheStillValid(lastTimestamp: number, ttlMs: number): boolean {
 
 ---
 
-## Session 生命周期
+## Session Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Session 生命周期                              │
+│                        Session Lifecycle                             │
 └─────────────────────────────────────────────────────────────────────┘
 
-   创建                    活跃                     重置/删除
-    │                       │                          │
-    ▼                       ▼                          ▼
-┌────────┐            ┌──────────┐              ┌──────────┐
-│ 新消息 │───────────▶│  对话中  │─────────────▶│  重置    │
-│ 到达   │            │          │   /new       │  /delete │
-└────────┘            └────┬─────┘              └──────────┘
-                           │
-                           │ 空闲超时
-                           │ (idle reset)
-                           ▼
-                     ┌──────────┐
-                     │ 自动重置 │
-                     └──────────┘
+   Create                    Active                    Reset/Delete
+    │                         │                            │
+    ▼                         ▼                            ▼
+┌────────┐              ┌──────────┐                ┌──────────┐
+│  New   │─────────────▶│   In     │───────────────▶│  Reset   │
+│ message│              │ Convo    │   /new         │ /delete  │
+│ arrives│              │          │                │          │
+└────────┘              └────┬─────┘                └──────────┘
+                             │
+                             │ Idle timeout
+                             │ (idle reset)
+                             ▼
+                       ┌──────────┐
+                       │  Auto    │
+                       │  Reset   │
+                       └──────────┘
 ```
 
-### 重置触发条件
+### Reset Triggers
 
-| 触发器 | 条件 | 行为 |
-|--------|------|------|
-| 用户命令 | `/new`, `/reset` | 立即重置 |
-| 空闲超时 | 超过 `idleMinutes` 无活动 | 下次消息时重置 |
-| 手动删除 | `sessions.delete` | 删除 entry + 归档 transcript |
-| Cron 清理 | `sessionRetention` 过期 | 清理 isolated cron sessions |
+| Trigger | Condition | Behavior |
+|---------|-----------|----------|
+| User command | `/new`, `/reset` | Immediate reset |
+| Idle timeout | Exceeds `idleMinutes` without activity | Reset on next message |
+| Manual delete | `sessions.delete` | Delete entry + archive transcript |
+| Cron cleanup | `sessionRetention` expired | Clean up isolated cron sessions |
 
-### 重置行为
+### Reset Behavior
 
 ```typescript
-// 重置时保留的字段
+// Fields preserved on reset
 const PRESERVED_FIELDS = [
   'thinkingLevel',
   'verboseLevel', 
@@ -611,10 +618,10 @@ const PRESERVED_FIELDS = [
   'lastAccountId'
 ];
 
-// 重置时清除的字段
+// Fields cleared on reset
 const CLEARED_FIELDS = [
-  'sessionId',        // 生成新的
-  'sessionFile',      // 指向新 transcript
+  'sessionId',        // Generate new one
+  'sessionFile',      // Point to new transcript
   'totalTokens',
   'inputTokens', 
   'outputTokens',
@@ -625,23 +632,23 @@ const CLEARED_FIELDS = [
 
 ---
 
-## 相关文件
+## Related Files
 
-| 模块 | 文件路径 | 说明 |
-|------|----------|------|
-| Session Types | `src/config/sessions/types.ts` | 类型定义 |
-| Session Store | `src/config/sessions/store.ts` | 存储管理 |
-| Session Key | `src/routing/session-key.ts` | Key 解析与构建 |
-| Transcript | `src/config/sessions/transcript.ts` | 对话历史管理 |
-| Reset Logic | `src/config/sessions/reset.ts` | 重置逻辑 |
-| Compaction | `src/agents/compaction.ts` | 上下文压缩 |
-| Context Pruning | `src/agents/pi-extensions/context-pruning.ts` | 上下文修剪 |
-| Cache TTL | `src/agents/pi-embedded-runner/cache-ttl.ts` | Cache 跟踪 |
-| Gateway Session Utils | `src/gateway/session-utils.ts` | Gateway 层工具 |
+| Module | File Path | Description |
+|--------|-----------|-------------|
+| Session Types | `src/config/sessions/types.ts` | Type definitions |
+| Session Store | `src/config/sessions/store.ts` | Storage management |
+| Session Key | `src/routing/session-key.ts` | Key parsing and building |
+| Transcript | `src/config/sessions/transcript.ts` | Conversation history management |
+| Reset Logic | `src/config/sessions/reset.ts` | Reset logic |
+| Compaction | `src/agents/compaction.ts` | Context compression |
+| Context Pruning | `src/agents/pi-extensions/context-pruning.ts` | Context pruning |
+| Cache TTL | `src/agents/pi-embedded-runner/cache-ttl.ts` | Cache tracking |
+| Gateway Session Utils | `src/gateway/session-utils.ts` | Gateway layer utilities |
 
 ---
 
-## 参考资料
+## References
 
 - [OpenClaw Docs: Session Management](https://docs.openclaw.ai/concepts/session)
 - [OpenClaw Docs: Compaction](https://docs.openclaw.ai/concepts/compaction)
