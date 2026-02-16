@@ -245,56 +245,57 @@ User Message
 
 ## 3. System Architecture
 
-The following diagram shows the module architecture based on source code analysis (`src/` directory structure and import dependencies):
+The following diagram shows the module architecture based on source code analysis. All modules are **peer-level directories** under `src/` (no containment relationship):
 
 ```mermaid
 flowchart TB
-    subgraph Channels["Channel Adapters"]
-        TG[Telegram<br/>src/telegram/]
-        DC[Discord<br/>src/discord/]
-        WA[WhatsApp<br/>src/whatsapp/]
-        OT[Other...]
+    subgraph Channels["Channel Adapters (src/telegram/, src/discord/, ...)"]
+        TG[Telegram]
+        DC[Discord]
+        WA[WhatsApp]
     end
 
-    subgraph Core["Core Gateway"]
-        Router["Routing<br/>src/routing/<br/>─────────<br/>resolve-route.ts<br/>session-key.ts"]
-        
-        AutoReply["Auto-Reply<br/>src/auto-reply/<br/>─────────<br/>get-reply.ts<br/>commands-registry.ts"]
-        
-        subgraph SessionMgr["Session Store (src/config/sessions/)"]
-            Store["store.ts<br/>Metadata Index"]
-            Trans["transcript.ts<br/>History JSONL"]
-        end
-        
-        subgraph AgentCore["Agent Core (src/agents/)"]
-            Runner["pi-embedded-runner/<br/>run/attempt.ts"]
-            Subscribe["pi-embedded-subscribe.ts<br/>Stream & Tool Events"]
-            SysPrompt["system-prompt.ts<br/>Prompt Builder"]
-            Compact["compaction.ts<br/>Token Pruning"]
-            Tools["pi-tools.ts + tools/<br/>Tool Definitions"]
-        end
+    subgraph Routing["Routing (src/routing/)"]
+        RR[resolve-route.ts]
+        SK[session-key.ts]
+    end
+
+    subgraph AutoReply["Auto-Reply (src/auto-reply/)"]
+        GR[get-reply.ts]
+        CR[commands-registry.ts]
+    end
+
+    subgraph SessionStore["Session Store (src/config/sessions/)"]
+        ST[store.ts]
+        TR[transcript.ts]
+    end
+
+    subgraph AgentCore["Agent Core (src/agents/)"]
+        Runner[pi-embedded-runner/]
+        Sub[pi-embedded-subscribe.ts]
+        Sys[system-prompt.ts]
+        Comp[compaction.ts]
+        Tools[pi-tools.ts]
     end
 
     subgraph External["External"]
-        LLM["LLM Providers<br/>(via pi-ai)"]
-        FS["File System<br/>~/.openclaw/"]
+        LLM[(LLM Providers)]
+        FS[(File System)]
     end
 
-    TG & DC & WA & OT --> Router
-    Router --> AutoReply
-    AutoReply --> Store
-    AutoReply --> Runner
-    Store <--> Trans
-    Store & Trans --> FS
-    Runner --> SysPrompt
-    Runner --> Tools
-    Runner <--> Subscribe
-    Subscribe <--> LLM
-    Runner --> Compact
-    Compact --> Trans
+    TG & DC & WA --> RR
+    RR --> GR
+    GR --> ST
+    GR --> Runner
+    ST <--> TR
+    ST & TR --> FS
+    Runner --> Sys & Tools & Comp
+    Runner <--> Sub
+    Sub <--> LLM
+    Comp --> TR
 ```
 
-**Key Modules:**
+**Key Modules (all peer-level under `src/`):**
 
 | Module | Source Location | Core Files |
 |--------|-----------------|------------|
@@ -303,6 +304,9 @@ flowchart TB
 | **Auto-Reply** | `src/auto-reply/` | `reply/get-reply.ts` (entry point) |
 | **Session Store** | `src/config/sessions/` | `store.ts`, `transcript.ts` |
 | **Agent Core** | `src/agents/` | `pi-embedded-runner/run/attempt.ts` |
+| **Gateway Server** | `src/gateway/` | `server.impl.ts` (HTTP/WS server) |
+
+> ⚠️ **Note**: These modules are peer-level directories, not nested. The diagram shows **call relationships**, not containment.
 
 > 📊 **Detailed Module Documentation**: See [Module Architecture](./module-architecture.md) for comprehensive source code analysis.
 
