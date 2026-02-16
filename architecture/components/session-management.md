@@ -245,42 +245,9 @@ User Message
 
 ## 3. System Architecture
 
-```mermaid
-flowchart TB
-    subgraph Channels["Communication Channels"]
-        TG[Telegram]
-        DC[Discord]
-        WC[Webchat]
-        WA[WhatsApp]
-    end
-    
-    subgraph Gateway["Gateway Server"]
-        Router[Session Router]
-        
-        subgraph Sessions["Session Pool"]
-            S1["agent:main:main<br/>(Main Session)"]
-            S2["agent:main:telegram:123<br/>(User DM)"]
-            S3["agent:main:discord:group:456<br/>(Group Chat)"]
-            S4["agent:research:cron:daily<br/>(Cron Job)"]
-        end
-        
-        Store[(Session Store<br/>sessions.json)]
-        Trans[(Transcripts<br/>*.jsonl)]
-    end
-    
-    TG --> Router
-    DC --> Router
-    WC --> Router
-    WA --> Router
-    
-    Router --> S1
-    Router --> S2
-    Router --> S3
-    Router --> S4
-    
-    S1 & S2 & S3 & S4 --> Store
-    S1 & S2 & S3 & S4 --> Trans
-```
+![Complete System Architecture (Phase-Based View)](../assets/session-architecture-complete.jpg)
+
+*Figure: Complete system architecture showing Phase 5 (LLM Invocation with Tool Use Loop) and Phase 6 (Persist with Compaction). The diagram illustrates the tool execution cycle, LLM streaming, and the compaction decision flow when tokens exceed 80k.*
 
 > 📊 **Detailed Architecture Diagram**: For a comprehensive view showing all 7 phases with module interactions and data flow, see [Session Lifecycle Architecture](../diagrams/session-lifecycle-architecture.md).
 
