@@ -39,6 +39,7 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 15. [User Identification](#15-user-identification)
 16. [Session Lifecycle](#16-session-lifecycle)
 17. [System Prompt Construction](#17-system-prompt-construction)
+18. [LLM Event-Driven State Machine](#18-llm-event-driven-state-machine)
 
 **Appendices**
 - [Appendix A: Sequence Diagram Step-by-Step](#appendix-a-sequence-diagram-step-by-step)
@@ -1013,6 +1014,309 @@ flowchart TB
 | `src/agents/bootstrap-files.ts` | Workspace file loading orchestration |
 | `src/agents/pi-embedded-helpers/bootstrap.ts` | Truncation, context file building |
 | `src/agents/workspace.ts` | Workspace file definitions and loading |
+
+---
+
+## 18. LLM Event-Driven State Machine
+
+OpenClaw uses an **event-driven architecture** to handle LLM responses. This section explains the state machine that processes streaming responses, tool calls, and generates user replies.
+
+### 18.1 Overview
+
+When the LLM generates a response, it emits a series of **events** that OpenClaw processes through a subscription handler. This enables:
+- **Streaming responses** to users (partial text as it's generated)
+- **Tool execution** when the LLM requests actions
+- **Compaction handling** when context limits are reached
+- **Block-based replies** for long responses
+
+### 18.2 State Machine Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: Session ready
+    
+    Idle --> AgentRunning: prompt() called
+    
+    state AgentRunning {
+        [*] --> WaitingForMessage
+        
+        WaitingForMessage --> Streaming: message_start
+        
+        state Streaming {
+            [*] --> ReceivingText
+            ReceivingText --> ReceivingText: message_update (text_delta)
+            ReceivingText --> TextComplete: message_update (text_end)
+            TextComplete --> [*]
+        }
+        
+        Streaming --> ToolRequested: tool_use detected
+        
+        state ToolExecution {
+            [*] --> ExecutingTool
+            ExecutingTool --> ToolComplete: execution finished
+            ToolComplete --> [*]
+        }
+        
+        ToolRequested --> ToolExecution: tool_execution_start
+        ToolExecution --> WaitingForMessage: tool_execution_end
+        
+        Streaming --> MessageComplete: message_end
+        MessageComplete --> WaitingForMessage: more messages
+        MessageComplete --> [*]: no more
+    }
+    
+    AgentRunning --> Compacting: auto_compaction_start
+    Compacting --> AgentRunning: auto_compaction_end
+    
+    AgentRunning --> Complete: agent_end
+    Complete --> Idle: ready for next
+    
+    AgentRunning --> Error: error event
+    Error --> Idle: handled
+```
+
+### 18.3 Event Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant OpenClaw
+    participant EventHandler as Event Handler
+    participant LLM
+    participant Tools
+    
+    User->>OpenClaw: Send message
+    OpenClaw->>LLM: prompt()
+    
+    LLM-->>EventHandler: agent_start
+    EventHandler->>OpenClaw: Initialize run state
+    
+    loop Streaming Response
+        LLM-->>EventHandler: message_start
+        EventHandler->>OpenClaw: onAssistantMessageStart()
+        
+        loop Text Chunks
+            LLM-->>EventHandler: message_update (text_delta)
+            EventHandler->>OpenClaw: onPartialReply(text)
+            OpenClaw-->>User: [Typing indicator / partial text]
+        end
+        
+        LLM-->>EventHandler: message_update (text_end)
+        EventHandler->>OpenClaw: onBlockReply(text)
+    end
+    
+    alt Tool Use Requested
+        LLM-->>EventHandler: tool_execution_start
+        EventHandler->>OpenClaw: onToolStart(toolName, args)
+        OpenClaw->>Tools: Execute tool
+        Tools-->>OpenClaw: Result
+        EventHandler->>LLM: tool_result
+        LLM-->>EventHandler: tool_execution_end
+        Note over LLM,EventHandler: Continue with more messages...
+    end
+    
+    LLM-->>EventHandler: message_end
+    LLM-->>EventHandler: agent_end
+    EventHandler->>OpenClaw: Final result + usage
+    OpenClaw->>User: Send reply
+```
+
+### 18.4 Event Types Reference
+
+| Event | Trigger | Handler Module | Data Passed | Actions Executed |
+|-------|---------|----------------|-------------|------------------|
+| `agent_start` | LLM call initiated | `handlers.lifecycle.ts` | `runId` | Initialize run state, emit lifecycle event, start typing indicator |
+| `message_start` | Assistant begins output | `handlers.messages.ts` | `message: { role: "assistant" }` | Reset message state, clear buffers, call `onAssistantMessageStart()` |
+| `message_update` | Streaming text chunk | `handlers.messages.ts` | `message`, `assistantMessageEvent: { type, delta, content }` | Append to buffer, emit partial reply, update streaming state |
+| `message_end` | Assistant message complete | `handlers.messages.ts` | `message: AgentMessage` | Finalize text, emit block reply, record assistant text |
+| `tool_execution_start` | LLM requests tool call | `handlers.tools.ts` | `toolName`, `toolCallId`, `args` | Flush reply buffer, run `before_tool_call` hook, emit tool event, start typing |
+| `tool_execution_update` | Tool progress update | `handlers.tools.ts` | `toolCallId`, `output` (partial) | Emit tool output event (if enabled) |
+| `tool_execution_end` | Tool returns result | `handlers.tools.ts` | `toolCallId`, `result`, `error?` | Run `after_tool_call` hook, emit tool summary, send result to LLM |
+| `auto_compaction_start` | Context limit reached | `handlers.lifecycle.ts` | - | Set compaction flag, run `before_compaction` hook, emit compaction event |
+| `auto_compaction_end` | Compaction complete | `handlers.lifecycle.ts` | `willRetry: boolean` | Reset state if retry, run `after_compaction` hook |
+| `agent_end` | Turn complete | `handlers.lifecycle.ts` | - | Finalize run, emit lifecycle event, return result |
+
+### 18.5 Message Update Sub-Events
+
+The `message_update` event contains an `assistantMessageEvent` with different types:
+
+| Sub-Event Type | When Emitted | Data | Processing |
+|----------------|--------------|------|------------|
+| `text_start` | Beginning of text block | `content` (initial text) | Initialize delta buffer |
+| `text_delta` | Each streaming chunk | `delta` (incremental text) | Append to buffer, emit partial |
+| `text_end` | Text block complete | `content` (full text, optional) | Reconcile with buffer, emit block reply |
+
+```typescript
+// Example message_update event structure
+{
+  type: "message_update",
+  message: { role: "assistant", content: "..." },
+  assistantMessageEvent: {
+    type: "text_delta",      // or "text_start" | "text_end"
+    delta: "Hello",          // incremental text
+    content: "Hello world",  // full text (usually on text_end)
+  }
+}
+```
+
+### 18.6 Tool Execution Flow
+
+```mermaid
+flowchart TB
+    subgraph Detection["Tool Use Detection"]
+        STREAM["Streaming response"]
+        DETECT{"tool_use block
+        in response?"}
+        STREAM --> DETECT
+    end
+    
+    subgraph Execution["Tool Execution"]
+        START["tool_execution_start
+        ─────────────────
+        toolName: 'exec'
+        toolCallId: 'tool_abc123'
+        args: { command: 'ls' }"]
+        
+        HOOK1["before_tool_call hook
+        (plugin system)"]
+        
+        EXEC["Execute Tool
+        ─────────────────
+        createOpenClawCodingTools()
+        → exec, read, write, etc."]
+        
+        UPDATE["tool_execution_update
+        (optional progress)"]
+        
+        RESULT["Prepare Result
+        ─────────────────
+        { success: true, output: '...' }
+        or { error: '...' }"]
+        
+        HOOK2["after_tool_call hook
+        (plugin system)"]
+        
+        END["tool_execution_end
+        ─────────────────
+        Send result back to LLM"]
+    end
+    
+    subgraph Continue["Continue Generation"]
+        FEED["Feed tool_result to LLM"]
+        MORE{"More tool calls
+        or final text?"}
+        FINAL["Final response"]
+    end
+    
+    DETECT -->|Yes| START
+    DETECT -->|No| FINAL
+    
+    START --> HOOK1
+    HOOK1 --> EXEC
+    EXEC --> UPDATE
+    UPDATE --> RESULT
+    RESULT --> HOOK2
+    HOOK2 --> END
+    
+    END --> FEED
+    FEED --> MORE
+    MORE -->|More tools| START
+    MORE -->|Final text| FINAL
+```
+
+### 18.7 State Variables
+
+The event handler maintains several state variables:
+
+```typescript
+type EmbeddedPiSubscribeState = {
+  // Text accumulation
+  assistantTexts: string[];           // All assistant texts this turn
+  deltaBuffer: string;                // Accumulated streaming text
+  blockBuffer: string;                // Text pending block reply
+  
+  // Streaming state
+  lastStreamedAssistant?: string;     // Last streamed text (for deduplication)
+  lastStreamedAssistantCleaned?: string;  // After directive parsing
+  emittedAssistantUpdate: boolean;    // Has partial been emitted?
+  
+  // Block state (for <think>/<final> tags)
+  blockState: {
+    thinking: boolean;                // Inside <think> block
+    final: boolean;                   // Inside <final> block
+    inlineCode: InlineCodeState;      // Track ``` blocks
+  };
+  
+  // Tool tracking
+  toolMetas: Array<{ toolName?, meta? }>;
+  toolMetaById: Map<string, string | undefined>;
+  toolSummaryById: Set<string>;       // Prevent duplicate summaries
+  lastToolError?: ToolErrorSummary;
+  
+  // Compaction state
+  compactionInFlight: boolean;
+  pendingCompactionRetry: number;
+  
+  // Messaging deduplication
+  messagingToolSentTexts: string[];   // Prevent duplicate sends
+  pendingMessagingTexts: Map<string, string>;
+};
+```
+
+### 18.8 Callback Functions
+
+OpenClaw registers callbacks when subscribing to the session:
+
+| Callback | Purpose | When Called |
+|----------|---------|-------------|
+| `onPartialReply(text)` | Stream partial text to user | On each `text_delta` with visible text |
+| `onBlockReply(text)` | Send complete text block | On `text_end` or message boundary |
+| `onReasoningStream(text)` | Stream thinking content | When reasoning mode is "stream" |
+| `onAssistantMessageStart()` | Signal assistant is writing | On `message_start` |
+| `onToolStart(name, args)` | Tool execution beginning | On `tool_execution_start` |
+| `onToolOutput(name, output)` | Tool intermediate output | On `tool_execution_update` |
+| `onAgentEvent(event)` | General event notification | On all events |
+
+### 18.9 Reply Generation
+
+The final reply is generated from accumulated state:
+
+```typescript
+// After agent_end, assemble final reply
+const finalReply = {
+  text: state.assistantTexts.join("\n"),
+  reasoning: state.includeReasoning ? extractThinking(deltaBuffer) : undefined,
+  toolSummaries: Array.from(state.toolSummaryById),
+  usage: normalizeUsage(session.usage),
+};
+
+// Apply post-processing
+const processedReply = {
+  ...finalReply,
+  text: stripMessagingDuplicates(finalReply.text, state.messagingToolSentTexts),
+};
+```
+
+### 18.10 Error Handling
+
+| Error Type | Event | Handling |
+|------------|-------|----------|
+| LLM API Error | Thrown from `prompt()` | Caught in run loop, retry with failover |
+| Tool Execution Error | Caught in tool handler | Error returned as tool result to LLM |
+| Compaction Error | `auto_compaction_end` with retry | State reset, retry compaction |
+| Timeout | AbortSignal triggered | Abort session, return partial result |
+| Rate Limit | Detected in error response | Backoff and retry |
+
+### 18.11 Source Files
+
+| File | Responsibility |
+|------|----------------|
+| `src/agents/pi-embedded-subscribe.ts` | Main subscription setup, state management |
+| `src/agents/pi-embedded-subscribe.handlers.ts` | Event router (switch on event type) |
+| `src/agents/pi-embedded-subscribe.handlers.messages.ts` | message_start/update/end handlers |
+| `src/agents/pi-embedded-subscribe.handlers.tools.ts` | tool_execution_* handlers |
+| `src/agents/pi-embedded-subscribe.handlers.lifecycle.ts` | agent_start/end, compaction handlers |
+| `src/agents/pi-embedded-subscribe.handlers.types.ts` | Type definitions for state and context |
 
 ---
 
