@@ -493,6 +493,8 @@ type SessionEntry = {
 
 Manages conversation history in JSONL format.
 
+> 📖 **Deep Dive:** For analysis of how transcripts handle provider switching and the decoupling strategy, see [Transcript-Provider Decoupling](../deep-dives/transcript-provider-decoupling.md).
+
 ### Storage
 
 ```
