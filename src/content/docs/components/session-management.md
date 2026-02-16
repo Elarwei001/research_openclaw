@@ -712,73 +712,829 @@ stateDiagram-v2
 
 ## Appendix A: Sequence Diagram Step-by-Step
 
+This appendix provides detailed input/output specifications and internal processing logic for each step in the session lifecycle.
+
+---
+
 ### Phase 1: Message Routing (Steps 1-5)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 1 | User sends message | Raw message via webhook/polling |
-| 2 | `buildTelegramMessageContext()` | Extract metadata |
-| 3 | `resolveAgentRoute()` | Determine agent |
-| 4 | `buildAgentPeerSessionKey()` | Construct session key |
-| 5 | Return route | Ready for session loading |
+**Purpose**: Transform raw platform message into a routed session context with a deterministic session key.
+
+#### Step 1: User sends message
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Raw HTTP request from Telegram (webhook) or polling response |
+| **Output** | `Update` object containing `Message` with chat/user/content data |
+| **Processing** | Grammy framework parses JSON payload into typed `Context` object |
+
+**Key fields extracted**:
+```typescript
+{
+  message: {
+    message_id: number,
+    chat: { id: number, type: "private" | "group" | "supergroup" },
+    from: { id: number, username?: string, first_name?: string },
+    text?: string,
+    caption?: string,
+    message_thread_id?: number,  // For forum topics / DM threads
+  }
+}
+```
+
+#### Step 2: `buildTelegramMessageContext()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `TelegramContext` (Grammy), `OpenClawConfig`, `Bot` instance, media refs |
+| **Output** | `TelegramMessageContext` or `null` (if filtered out) |
+| **Source** | `src/telegram/bot-message-context.ts` |
+
+**Internal processing**:
+
+1. **Extract chat metadata**:
+   ```typescript
+   const chatId = msg.chat.id;
+   const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+   const messageThreadId = msg.message_thread_id;
+   const isForum = msg.chat.is_forum === true;
+   ```
+
+2. **Resolve thread specification**:
+   ```typescript
+   const threadSpec = resolveTelegramThreadSpec({ isGroup, isForum, messageThreadId });
+   // threadSpec.scope: "forum" | "dm" | "none"
+   // threadSpec.id: thread ID if applicable
+   ```
+
+3. **Build peer identifiers**:
+   ```typescript
+   const peerId = isGroup 
+     ? buildTelegramGroupPeerId(chatId, resolvedThreadId)  // "-100123456" or "-100123456:456"
+     : String(chatId);                                      // "123456789"
+   const parentPeer = buildTelegramParentPeer({ isGroup, resolvedThreadId, chatId });
+   ```
+
+4. **Apply access control** (before routing):
+   - DM policy check: `pairing` / `allowlist` / `open` / `disabled`
+   - Group enabled check: `groupConfig?.enabled`
+   - Topic enabled check: `topicConfig?.enabled`
+   - If blocked, return `null` (message dropped)
+
+5. **Call routing** (Step 3)
+
+#### Step 3: `resolveAgentRoute()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `ResolveAgentRouteInput` (see below) |
+| **Output** | `ResolvedAgentRoute` with `agentId`, `sessionKey`, `matchedBy` |
+| **Source** | `src/routing/resolve-route.ts` |
+
+**Input structure**:
+```typescript
+{
+  cfg: OpenClawConfig,
+  channel: "telegram",
+  accountId: "default" | "<bot-token-hash>",
+  peer: { kind: "direct" | "group", id: "123456" },
+  parentPeer?: { kind: "group", id: "-100123456" },  // For forum threads
+  guildId?: string,    // Discord only
+  memberRoleIds?: string[],  // Discord only
+}
+```
+
+**Internal processing**:
+
+1. **Normalize inputs**:
+   ```typescript
+   const channel = normalizeToken(input.channel);      // "telegram"
+   const accountId = normalizeAccountId(input.accountId); // "default" if empty
+   const peer = { kind: input.peer.kind, id: normalizeId(input.peer.id) };
+   ```
+
+2. **Filter applicable bindings**:
+   ```typescript
+   const bindings = listBindings(cfg).filter(binding => 
+     matchesChannel(binding.match, channel) &&
+     matchesAccountId(binding.match?.accountId, accountId)
+   );
+   ```
+
+3. **Match bindings in priority order**:
+   ```
+   Priority 1: binding.peer       → Exact peer match (channel + peer.kind + peer.id)
+   Priority 2: binding.peer.parent → Parent peer match (for forum topics)
+   Priority 3: binding.guild+roles → Discord: guild + role match
+   Priority 4: binding.guild       → Discord: guild match
+   Priority 5: binding.team        → Slack: team match  
+   Priority 6: binding.account     → Account-level binding
+   Priority 7: binding.channel     → Channel-level binding
+   Priority 8: default             → resolveDefaultAgentId(cfg)
+   ```
+
+4. **Resolve final agent ID**:
+   ```typescript
+   const resolvedAgentId = pickFirstExistingAgentId(cfg, matchedAgentId);
+   // Validates agent exists in cfg.agents.list, falls back to default
+   ```
+
+**Output structure**:
+```typescript
+{
+  agentId: "main",
+  channel: "telegram", 
+  accountId: "default",
+  sessionKey: "agent:main:telegram:private:123456",
+  mainSessionKey: "agent:main:main",
+  matchedBy: "binding.peer" | "default" | ...
+}
+```
+
+#### Step 4: `buildAgentPeerSessionKey()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `agentId`, `channel`, `accountId`, `peerKind`, `peerId`, `dmScope` |
+| **Output** | Session key string |
+| **Source** | `src/routing/session-key.ts` |
+
+**Internal processing**:
+
+1. **Check dmScope configuration** (for DMs only):
+   ```typescript
+   // dmScope options:
+   // - "main": All DMs → "agent:main:main"
+   // - "per-peer": Per user → "agent:main:telegram:private:123456"
+   // - "per-channel-peer": Per channel+user
+   // - "per-account-channel-peer": Full isolation
+   ```
+
+2. **Build key based on peer kind**:
+   ```typescript
+   // Groups always get full key:
+   if (peerKind === "group") {
+     return `agent:${agentId}:${channel}:group:${peerId}`;
+   }
+   
+   // DMs depend on dmScope:
+   if (dmScope === "main") {
+     return `agent:${agentId}:main`;
+   }
+   // ... other dmScope variations
+   ```
+
+3. **Apply identity links** (optional):
+   ```typescript
+   // If identityLinks configured, map peer IDs across channels
+   // e.g., same user on Telegram and WhatsApp shares session
+   ```
+
+**Output examples**:
+```
+agent:main:main                           # DM with dmScope="main"
+agent:main:telegram:private:123456        # DM with dmScope="per-peer"
+agent:main:telegram:group:-100123456      # Group chat
+agent:main:telegram:group:-100123456:789  # Forum topic (parent:topic)
+agent:research:discord:group:987654       # Different agent binding
+```
+
+#### Step 5: Return route
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Completed `ResolvedAgentRoute` from Step 3-4 |
+| **Output** | Route object passed to session loading phase |
+| **Processing** | Package routing results with delivery context |
+
+**Final context assembled**:
+```typescript
+{
+  route: {
+    agentId: "main",
+    sessionKey: "agent:main:telegram:private:123456",
+    mainSessionKey: "agent:main:main",
+    matchedBy: "default",
+  },
+  deliveryContext: {
+    channel: "telegram",
+    to: "123456",
+    accountId: "default",
+    threadId: undefined,
+  },
+  msgContext: {
+    From: "+6512345678",
+    Body: "Hello!",
+    SenderName: "John",
+    // ... other envelope fields
+  }
+}
+```
+
+---
 
 ### Phase 2: Session State Loading (Steps 6-10)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 6 | `loadSessionStore()` | Entry point |
-| 7 | Check cache | 45s TTL |
-| 8 | Read `sessions.json` | On cache miss |
-| 9 | Update cache | Store in memory |
-| 10 | Return `SessionEntry` | Metadata loaded |
+**Purpose**: Load or initialize session metadata from persistent storage.
+
+#### Step 6: `loadSessionStore(storePath)`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `storePath` derived from `agentId` |
+| **Output** | `Record<string, SessionEntry>` (all sessions for this agent) |
+| **Source** | `src/config/sessions/store.ts` |
+
+**Store path resolution**:
+```typescript
+// From agentId to storePath:
+const agentId = resolveAgentIdFromSessionKey(sessionKey);  // "main"
+const storePath = resolveStorePath(sessionCfg?.store, { agentId });
+// → "~/.openclaw/sessions/main/sessions.json"
+```
+
+#### Step 7: Check cache
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `storePath`, in-memory cache map |
+| **Output** | Cached store if valid, or cache miss signal |
+| **Processing** | TTL check (45s default) + mtime comparison |
+
+**Cache validation logic**:
+```typescript
+const cached = SESSION_STORE_CACHE.get(storePath);
+if (cached && isSessionStoreCacheValid(cached)) {
+  const currentMtimeMs = getFileMtimeMs(storePath);
+  if (currentMtimeMs === cached.mtimeMs) {
+    return structuredClone(cached.store);  // Cache hit
+  }
+  invalidateSessionStoreCache(storePath);  // File changed
+}
+// Cache miss → proceed to disk read
+```
+
+#### Step 8: Read `sessions.json`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `storePath` file path |
+| **Output** | Parsed JSON object |
+| **Processing** | File read + JSON parse + validation |
+
+**File structure**:
+```json
+{
+  "agent:main:telegram:private:123456": {
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "sessionFile": "550e8400-e29b-41d4-a716-446655440000.jsonl",
+    "createdAt": 1707900000000,
+    "updatedAt": 1707986400000,
+    "channel": "telegram",
+    "lastChannel": "telegram",
+    "totalTokens": 15420,
+    "totalInputTokens": 12300,
+    "totalOutputTokens": 3120,
+    "thinkingLevel": "medium",
+    "verboseLevel": "normal",
+    "compactionMarker": "summary-abc123"
+  }
+}
+```
+
+#### Step 9: Update cache
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Loaded store, current mtime |
+| **Output** | Cache entry stored in memory |
+| **Processing** | Store with timestamp for TTL tracking |
+
+```typescript
+SESSION_STORE_CACHE.set(storePath, {
+  store: structuredClone(store),
+  mtimeMs: currentMtimeMs,
+  cachedAt: Date.now(),
+});
+```
+
+#### Step 10: Return `SessionEntry`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Full store, target `sessionKey` |
+| **Output** | `SessionEntry` for this session (or undefined if new) |
+| **Processing** | Lookup by key, evaluate freshness |
+
+**Freshness evaluation**:
+```typescript
+const entry = sessionStore[sessionKey];
+const fresh = entry 
+  ? evaluateSessionFreshness({
+      updatedAt: entry.updatedAt,
+      now: Date.now(),
+      policy: resetPolicy,  // e.g., { maxAgeMs: 86400000 }
+    }).fresh
+  : false;
+
+// If not fresh, session will be reset (new sessionId generated)
+```
+
+---
 
 ### Phase 3: Prepare Agent (Steps 11-15)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 11 | `getReplyFromConfig()` | Main entry |
-| 12 | `initSessionState()` | Initialize state |
-| 13 | `resolveReplyDirectives()` | Parse `/think`, `/model` |
-| 14 | `runPreparedReply()` | Prepare context |
-| 15 | `runEmbeddedPiAgent()` | Call agent |
+**Purpose**: Initialize agent runtime with resolved configuration and directives.
+
+#### Step 11: `getReplyFromConfig()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `msgContext`, `deliveryContext`, `OpenClawConfig` |
+| **Output** | Reply result (text, media, usage stats) |
+| **Source** | `src/auto-reply/reply/get-reply.ts` |
+
+**Entry point orchestration**:
+```typescript
+export async function getReplyFromConfig(params: GetReplyParams): Promise<ReplyResult> {
+  const state = initSessionState(params);
+  const directives = resolveReplyDirectives(params.body, params.cfg);
+  return runPreparedReply({ ...params, state, directives });
+}
+```
+
+#### Step 12: `initSessionState()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Session entry, config, delivery context |
+| **Output** | `SessionState` object |
+| **Processing** | Merge persisted state with defaults |
+
+**State structure**:
+```typescript
+{
+  sessionId: "550e8400-...",
+  sessionKey: "agent:main:telegram:private:123456",
+  thinkingLevel: "medium",      // From entry or directive
+  verboseLevel: "normal",       // From entry or directive
+  modelOverride: undefined,     // From /model command
+  isNewSession: false,
+  channel: "telegram",
+}
+```
+
+#### Step 13: `resolveReplyDirectives()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Message body text |
+| **Output** | Parsed directives (commands, overrides) |
+| **Processing** | Regex matching for `/think`, `/model`, etc. |
+
+**Directive examples**:
+```typescript
+// Input: "/think high What is 2+2?"
+{
+  thinkingOverride: "high",
+  cleanedBody: "What is 2+2?",
+}
+
+// Input: "/model opus Tell me a joke"
+{
+  modelOverride: "anthropic/claude-opus-4",
+  cleanedBody: "Tell me a joke",
+}
+```
+
+#### Step 14: `runPreparedReply()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Prepared params with state and directives |
+| **Output** | Delegates to `runEmbeddedPiAgent()` |
+| **Processing** | Final parameter assembly, lock acquisition |
+
+#### Step 15: `runEmbeddedPiAgent()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Full agent parameters |
+| **Output** | Agent run result |
+| **Source** | `src/agents/pi-embedded.ts` |
+
+**Key parameters assembled**:
+```typescript
+{
+  sessionId,
+  sessionKey,
+  agentId,
+  workspaceDir,           // e.g., "~/clawd"
+  model: { provider, model },
+  thinkingLevel,
+  tools: [...],           // Filtered by policy
+  systemPrompt: "...",    // With workspace files injected
+}
+```
+
+---
 
 ### Phase 4: Load History (Steps 16-24)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 16 | `acquireSessionWriteLock()` | Lock file |
-| 17 | `SessionManager.open()` | Open transcript |
-| 18 | Read `.jsonl` | Parse messages |
-| 19-21 | `buildSessionContext()` | Filter by compaction |
-| 22 | `sanitizeSessionHistory()` | Clean messages |
-| 23 | `limitHistoryTurns()` | Truncate |
-| 24 | `replaceMessages()` | Apply to agent |
+**Purpose**: Load conversation history from transcript, apply filters, prepare for LLM context.
+
+#### Step 16: `acquireSessionWriteLock()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `transcriptPath` |
+| **Output** | Lock handle (release function) |
+| **Source** | `src/config/sessions/locking.ts` |
+
+**Locking mechanism**:
+```typescript
+// Uses proper-lockfile for cross-process safety
+await lockfile.lock(transcriptPath + ".lock", {
+  retries: { retries: 10, maxTimeout: 1000 },
+  stale: 30000,  // Consider stale after 30s
+});
+```
+
+#### Step 17: `SessionManager.open()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `sessionId`, `storePath` |
+| **Output** | `SessionManager` instance with transcript handle |
+| **Source** | `src/config/sessions/transcript.ts` |
+
+**Transcript path resolution**:
+```typescript
+const transcriptPath = resolveSessionTranscriptPath({
+  sessionId: "550e8400-...",
+  entry: sessionEntry,
+  sessionCfg,
+});
+// → "~/.openclaw/sessions/main/transcripts/550e8400-....jsonl"
+```
+
+#### Step 18: Read `.jsonl`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Transcript file path |
+| **Output** | Array of `TranscriptMessage` objects |
+| **Processing** | Line-by-line JSON parse |
+
+**Transcript format** (JSONL):
+```jsonl
+{"role":"user","content":"Hello!","ts":1707900000000}
+{"role":"assistant","content":"Hi there!","ts":1707900001000}
+{"role":"user","content":"What is 2+2?","ts":1707900060000}
+{"role":"assistant","content":"4","ts":1707900061000,"usage":{"input":150,"output":10}}
+{"marker":"summary","id":"abc123","summary":"User greeted, asked math question","ts":1707900100000}
+```
+
+#### Steps 19-21: `buildSessionContext()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Raw transcript messages, compaction marker |
+| **Output** | Filtered messages for LLM context |
+| **Processing** | Apply compaction boundary, inject summary |
+
+**Compaction filtering**:
+```typescript
+// Find compaction marker position
+const markerIndex = messages.findIndex(
+  m => m.marker === "summary" && m.id === entry.compactionMarker
+);
+
+if (markerIndex >= 0) {
+  // Keep: summary message + everything after marker
+  const summary = messages[markerIndex];
+  const afterMarker = messages.slice(markerIndex + 1);
+  return [
+    { role: "user", content: `[Previous conversation summary]\n${summary.summary}` },
+    ...afterMarker
+  ];
+}
+// No marker: return all messages
+return messages;
+```
+
+#### Step 22: `sanitizeSessionHistory()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Filtered messages |
+| **Output** | Provider-compatible message array |
+| **Source** | `src/agents/pi-embedded-runner/sanitize.ts` |
+
+**Sanitization steps**:
+1. `sanitizeToolUseResultPairing()` - Fix orphaned tool results
+2. `filterOrphanedToolResults()` - Remove unrepairable orphans
+3. `sanitizeConsecutiveRoles()` - Merge same-role messages
+4. `sanitizeEmptyContent()` - Remove empty messages
+
+#### Step 23: `limitHistoryTurns()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Sanitized messages, `maxTurns` config |
+| **Output** | Truncated message array |
+| **Processing** | Keep last N user-assistant pairs |
+
+```typescript
+// Default: 100 turns (200 messages)
+const maxMessages = (maxTurns ?? 100) * 2;
+if (messages.length > maxMessages) {
+  return messages.slice(-maxMessages);
+}
+return messages;
+```
+
+#### Step 24: `replaceMessages()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Final message array |
+| **Output** | Messages loaded into agent session |
+| **Processing** | Set as conversation history |
+
+---
 
 ### Phase 5: LLM Invocation (Steps 25-32)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 25 | `createAgentSession()` | Init LLM connection |
-| 26 | `applySystemPromptOverride()` | Inject workspace files |
-| 27 | `activeSession.prompt()` | Call LLM |
-| 28 | Streaming loop | Process chunks |
-| 29-31 | Tool use | Execute tools, return results |
-| 32 | Final response | Get usage stats |
+**Purpose**: Execute LLM call with prepared context, handle streaming and tool use.
+
+#### Step 25: `createAgentSession()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Model config, tools, system prompt |
+| **Output** | Active LLM session handle |
+| **Source** | `src/agents/pi-embedded-runner/run/attempt.ts` |
+
+**Session initialization**:
+```typescript
+const session = await claude.createSession({
+  model: "claude-opus-4",
+  systemPrompt: finalSystemPrompt,
+  tools: enabledTools,
+  maxTokens: 16384,
+});
+```
+
+#### Step 26: `applySystemPromptOverride()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Base system prompt, workspace files |
+| **Output** | Final system prompt with injected content |
+| **Source** | `src/agents/pi-embedded-helpers/bootstrap.ts` |
+
+**Injection structure**:
+```
+[Base agent system prompt]
+
+## Project Context
+The following project context files have been loaded:
+
+## AGENTS.md
+[Content of AGENTS.md, truncated to 20k chars]
+
+## SOUL.md
+[Content of SOUL.md]
+
+## MEMORY.md
+[Content of MEMORY.md]
+...
+```
+
+#### Step 27: `activeSession.prompt()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | User message, conversation history |
+| **Output** | Streaming response iterator |
+| **Processing** | API call to LLM provider |
+
+#### Step 28: Streaming loop
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Response stream |
+| **Output** | Accumulated text, tool calls |
+| **Processing** | Process chunks, detect tool use |
+
+```typescript
+for await (const chunk of responseStream) {
+  if (chunk.type === "text") {
+    accumulatedText += chunk.text;
+    onPartialResponse?.(accumulatedText);
+  } else if (chunk.type === "tool_use") {
+    pendingToolCalls.push(chunk);
+  }
+}
+```
+
+#### Steps 29-31: Tool use loop
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Tool call requests from LLM |
+| **Output** | Tool results fed back to LLM |
+| **Processing** | Execute tools, continue conversation |
+
+**Tool execution flow**:
+```typescript
+while (pendingToolCalls.length > 0) {
+  const results = await Promise.all(
+    pendingToolCalls.map(call => executeToolCall(call))
+  );
+  
+  // Feed results back to LLM
+  const continuation = await session.continue(results);
+  
+  // Check for more tool calls or final response
+  pendingToolCalls = continuation.toolCalls;
+  if (continuation.text) {
+    accumulatedText = continuation.text;
+  }
+}
+```
+
+#### Step 32: Final response
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Completed LLM response |
+| **Output** | `AgentRunResult` with text, usage, metadata |
+| **Processing** | Extract usage stats, format response |
+
+**Result structure**:
+```typescript
+{
+  text: "The answer is 4.",
+  usage: {
+    inputTokens: 1250,
+    outputTokens: 45,
+    cacheReadTokens: 800,
+    cacheWriteTokens: 0,
+  },
+  model: "claude-opus-4",
+  stopReason: "end_turn",
+}
+```
+
+---
 
 ### Phase 6: Persist (Steps 33-40)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 33-34 | `appendMessage()` | Write to transcript |
-| 35-36 | Compaction (optional) | If needed |
-| 37-40 | `updateSessionStore()` | Update metadata |
+**Purpose**: Save conversation to transcript and update session metadata.
+
+#### Steps 33-34: `appendMessage()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | User message, assistant response |
+| **Output** | Messages appended to `.jsonl` file |
+| **Source** | `src/config/sessions/transcript.ts` |
+
+**Append format**:
+```typescript
+// Append user message
+await fs.appendFile(transcriptPath, JSON.stringify({
+  role: "user",
+  content: userMessage,
+  ts: Date.now(),
+}) + "\n");
+
+// Append assistant message
+await fs.appendFile(transcriptPath, JSON.stringify({
+  role: "assistant", 
+  content: assistantResponse,
+  ts: Date.now(),
+  usage: { input: 1250, output: 45 },
+}) + "\n");
+```
+
+#### Steps 35-36: Compaction (conditional)
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Current transcript, compaction config |
+| **Output** | Summary marker appended if triggered |
+| **Trigger** | Token threshold exceeded (default: 80k) |
+
+**Compaction process**:
+```typescript
+if (totalTokens > compactionThreshold) {
+  const summary = await generateSummary(recentMessages);
+  const markerId = crypto.randomUUID().slice(0, 8);
+  
+  await fs.appendFile(transcriptPath, JSON.stringify({
+    marker: "summary",
+    id: markerId,
+    summary: summary,
+    ts: Date.now(),
+  }) + "\n");
+  
+  // Update entry with new marker
+  entry.compactionMarker = markerId;
+}
+```
+
+#### Steps 37-40: `updateSessionStore()`
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Updated `SessionEntry`, `storePath` |
+| **Output** | `sessions.json` updated atomically |
+| **Source** | `src/config/sessions/store.ts` |
+
+**Atomic update process**:
+```typescript
+await withSessionStoreLock(storePath, async () => {
+  // Re-read to get latest state
+  const store = loadSessionStore(storePath, { skipCache: true });
+  
+  // Update entry
+  store[sessionKey] = {
+    ...store[sessionKey],
+    updatedAt: Date.now(),
+    totalTokens: store[sessionKey].totalTokens + usage.inputTokens + usage.outputTokens,
+    totalInputTokens: store[sessionKey].totalInputTokens + usage.inputTokens,
+    totalOutputTokens: store[sessionKey].totalOutputTokens + usage.outputTokens,
+    lastChannel: "telegram",
+  };
+  
+  // Write atomically
+  const tempPath = storePath + ".tmp";
+  await fs.writeFile(tempPath, JSON.stringify(store, null, 2));
+  await fs.rename(tempPath, storePath);
+  
+  // Invalidate cache
+  invalidateSessionStoreCache(storePath);
+});
+```
+
+---
 
 ### Phase 7: Deliver (Steps 41-43)
 
-| Step | Function | What it does |
-|------|----------|--------------|
-| 41-42 | Return result | To reply handler |
-| 43 | Send response | Via Telegram API |
+**Purpose**: Send response back to user via original channel.
+
+#### Steps 41-42: Return result
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | `AgentRunResult` |
+| **Output** | Formatted reply for channel |
+| **Processing** | Apply formatting, split if needed |
+
+**Reply formatting**:
+```typescript
+{
+  text: "The answer is 4.",
+  channel: "telegram",
+  to: "123456",
+  threadId: undefined,
+  replyToMessageId: 12345,  // If reply threading enabled
+}
+```
+
+#### Step 43: Send response
+
+| Aspect | Details |
+|--------|---------|
+| **Input** | Formatted reply |
+| **Output** | Message sent via Telegram API |
+| **Processing** | Handle chunking, media, reactions |
+
+**Telegram send**:
+```typescript
+await bot.api.sendMessage(chatId, responseText, {
+  reply_to_message_id: replyToMessageId,
+  message_thread_id: threadId,
+  parse_mode: "Markdown",
+});
+```
+
+---
+
+### Phase Summary Table
+
+| Phase | Steps | Key Functions | Primary I/O |
+|-------|-------|---------------|-------------|
+| 1. Routing | 1-5 | `resolveAgentRoute()`, `buildAgentPeerSessionKey()` | Message → SessionKey |
+| 2. Loading | 6-10 | `loadSessionStore()` | SessionKey → SessionEntry |
+| 3. Prepare | 11-15 | `initSessionState()`, `runEmbeddedPiAgent()` | Entry → AgentParams |
+| 4. History | 16-24 | `SessionManager.open()`, `sanitizeSessionHistory()` | Transcript → Messages |
+| 5. LLM | 25-32 | `createAgentSession()`, `prompt()` | Messages → Response |
+| 6. Persist | 33-40 | `appendMessage()`, `updateSessionStore()` | Response → Disk |
+| 7. Deliver | 41-43 | `sendMessage()` | Response → User |
 
 ---
 
