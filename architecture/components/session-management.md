@@ -245,11 +245,66 @@ User Message
 
 ## 3. System Architecture
 
-![Complete System Architecture (Phase-Based View)](../assets/session-architecture-complete.jpg)
+The following diagram shows the module architecture based on source code analysis (`src/` directory structure and import dependencies):
 
-*Figure: Complete system architecture showing Phase 5 (LLM Invocation with Tool Use Loop) and Phase 6 (Persist with Compaction). The diagram illustrates the tool execution cycle, LLM streaming, and the compaction decision flow when tokens exceed 80k.*
+```mermaid
+flowchart TB
+    subgraph Channels["Channel Adapters"]
+        TG[Telegram<br/>src/telegram/]
+        DC[Discord<br/>src/discord/]
+        WA[WhatsApp<br/>src/whatsapp/]
+        OT[Other...]
+    end
 
-> 📊 **Detailed Architecture Diagram**: For a comprehensive view showing all 7 phases with module interactions and data flow, see [Session Lifecycle Architecture](../diagrams/session-lifecycle-architecture.md).
+    subgraph Core["Core Gateway"]
+        Router["Routing<br/>src/routing/<br/>─────────<br/>resolve-route.ts<br/>session-key.ts"]
+        
+        AutoReply["Auto-Reply<br/>src/auto-reply/<br/>─────────<br/>get-reply.ts<br/>commands-registry.ts"]
+        
+        subgraph SessionMgr["Session Store (src/config/sessions/)"]
+            Store["store.ts<br/>Metadata Index"]
+            Trans["transcript.ts<br/>History JSONL"]
+        end
+        
+        subgraph AgentCore["Agent Core (src/agents/)"]
+            Runner["pi-embedded-runner/<br/>run/attempt.ts"]
+            Subscribe["pi-embedded-subscribe.ts<br/>Stream & Tool Events"]
+            SysPrompt["system-prompt.ts<br/>Prompt Builder"]
+            Compact["compaction.ts<br/>Token Pruning"]
+            Tools["pi-tools.ts + tools/<br/>Tool Definitions"]
+        end
+    end
+
+    subgraph External["External"]
+        LLM["LLM Providers<br/>(via pi-ai)"]
+        FS["File System<br/>~/.openclaw/"]
+    end
+
+    TG & DC & WA & OT --> Router
+    Router --> AutoReply
+    AutoReply --> Store
+    AutoReply --> Runner
+    Store <--> Trans
+    Store & Trans --> FS
+    Runner --> SysPrompt
+    Runner --> Tools
+    Runner <--> Subscribe
+    Subscribe <--> LLM
+    Runner --> Compact
+    Compact --> Trans
+```
+
+**Key Modules:**
+
+| Module | Source Location | Core Files |
+|--------|-----------------|------------|
+| **Channel Adapters** | `src/telegram/`, `src/discord/`, etc. | `monitor.ts`, `bot.ts`, `send.ts` |
+| **Routing** | `src/routing/` | `resolve-route.ts`, `session-key.ts` |
+| **Auto-Reply** | `src/auto-reply/` | `reply/get-reply.ts` (entry point) |
+| **Session Store** | `src/config/sessions/` | `store.ts`, `transcript.ts` |
+| **Agent Core** | `src/agents/` | `pi-embedded-runner/run/attempt.ts` |
+
+> 📊 **Detailed Module Documentation**: See [Module Architecture](./module-architecture.md) for comprehensive source code analysis.
 
 ## 4. Storage Structure
 
