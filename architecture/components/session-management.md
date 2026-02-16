@@ -280,6 +280,8 @@ flowchart TB
     S1 & S2 & S3 & S4 --> Trans
 ```
 
+> 📊 **Detailed Architecture Diagram**: For a comprehensive view showing all 7 phases with module interactions and data flow, see [Session Lifecycle Architecture](../diagrams/session-lifecycle-architecture.md).
+
 ## 4. Storage Structure
 
 ```
