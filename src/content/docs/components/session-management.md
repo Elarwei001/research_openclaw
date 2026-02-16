@@ -38,6 +38,7 @@ Session is the core concept of OpenClaw, responsible for managing conversation s
 14. [Multi-Agent Configuration](#14-multi-agent-configuration)
 15. [User Identification](#15-user-identification)
 16. [Session Lifecycle](#16-session-lifecycle)
+17. [System Prompt Construction](#17-system-prompt-construction)
 
 **Appendices**
 - [Appendix A: Sequence Diagram Step-by-Step](#appendix-a-sequence-diagram-step-by-step)
@@ -707,6 +708,311 @@ stateDiagram-v2
     Active --> Deleted: sessions.delete
     Deleted --> [*]
 ```
+
+---
+
+## 17. System Prompt Construction
+
+OpenClaw constructs a sophisticated system prompt for every LLM invocation. This section explains **what** is included, **how** it's assembled, and **why** this design was chosen.
+
+### 17.1 Overview: What's in the System Prompt?
+
+The system prompt is assembled from multiple sources and has a layered structure:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     SYSTEM PROMPT STRUCTURE                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ 1. BASE INSTRUCTIONS (hardcoded)                              │  │
+│  │    • Identity: "You are a personal assistant..."              │  │
+│  │    • Tooling: Available tools with summaries                  │  │
+│  │    • Safety: Anthropic-inspired constraints                   │  │
+│  │    • OpenClaw CLI reference                                   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                           ↓                                         │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ 2. DYNAMIC SECTIONS (config-driven)                           │  │
+│  │    • Skills: Available skill descriptions                     │  │
+│  │    • Memory: memory_search/memory_get instructions            │  │
+│  │    • Model Aliases: opus → anthropic/claude-opus-4            │  │
+│  │    • Docs Path: Local documentation location                  │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                           ↓                                         │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ 3. WORKSPACE FILES (user-editable, injected each turn)        │  │
+│  │    • AGENTS.md: Agent behavior and conventions                │  │
+│  │    • SOUL.md: Persona and tone                                │  │
+│  │    • TOOLS.md: Tool-specific notes (camera names, etc.)       │  │
+│  │    • USER.md: Information about the user                      │  │
+│  │    • IDENTITY.md: Agent's name, emoji, vibe                   │  │
+│  │    • MEMORY.md: Long-term memory (main session only)          │  │
+│  │    • HEARTBEAT.md: Periodic check instructions                │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                           ↓                                         │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ 4. RUNTIME CONTEXT (computed per-request)                     │  │
+│  │    • agent=main | host=MacBook | model=claude-opus-4          │  │
+│  │    • channel=telegram | capabilities=inlineButtons            │  │
+│  │    • Timezone, current time                                   │  │
+│  │    • Thinking level, reasoning mode                           │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 17.2 Workspace Files: The User-Editable Layer
+
+Workspace files are the key mechanism for **user customization**. They are:
+- Stored in the agent's workspace directory (e.g., `~/clawd/`)
+- Loaded fresh on **every turn** (not cached between requests)
+- Truncated if too large (default: 20,000 chars per file, 70% head + 20% tail)
+
+| File | Purpose | Loaded When |
+|------|---------|-------------|
+| `AGENTS.md` | Agent behavior, conventions, memory rules | Always |
+| `SOUL.md` | Persona, tone, personality | Always |
+| `TOOLS.md` | Tool-specific notes (local config) | Always |
+| `USER.md` | Information about the user | Always |
+| `IDENTITY.md` | Agent name, emoji, creature type | Always |
+| `HEARTBEAT.md` | What to check during heartbeat polls | Always |
+| `MEMORY.md` | Long-term memory | **Main session only** |
+| `BOOTSTRAP.md` | First-run setup guide | Only for new workspaces |
+
+**Why inject every turn?**
+- User can edit files at any time
+- Changes take effect immediately (no restart needed)
+- Memory updates are instantly visible
+
+**Security consideration for MEMORY.md**:
+```typescript
+// MEMORY.md is filtered out for non-main sessions to prevent
+// leaking personal context to group chats or other users
+const bootstrapFiles = filterBootstrapFilesForSession(
+  await loadWorkspaceBootstrapFiles(workspaceDir),
+  sessionKey,  // e.g., "agent:main:discord:group:123" → excludes MEMORY.md
+);
+```
+
+### 17.3 Truncation Strategy
+
+Large workspace files are truncated to stay within token limits:
+
+```typescript
+const DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000;
+const BOOTSTRAP_HEAD_RATIO = 0.7;  // Keep 70% from start
+const BOOTSTRAP_TAIL_RATIO = 0.2;  // Keep 20% from end
+
+// Result for a 50,000 char file:
+// [first 14,000 chars]
+// [...truncated, read AGENTS.md for full content...]
+// [last 4,000 chars]
+```
+
+**Why 70/20 split (not 50/50)?**
+- Most important content is typically at the beginning (instructions, rules)
+- Tail captures recent additions or appendices
+- 10% gap prevents overlap and adds clear truncation marker
+
+### 17.4 The Override Mechanism
+
+OpenClaw uses `@mariozechner/pi-coding-agent` which has its own default system prompt. OpenClaw **completely replaces** this with its custom prompt:
+
+```typescript
+// src/agents/pi-embedded-runner/system-prompt.ts
+export function applySystemPromptOverrideToSession(
+  session: AgentSession,
+  override: string,
+) {
+  const prompt = override.trim();
+  
+  // ① Set the new system prompt
+  session.agent.setSystemPrompt(prompt);
+  
+  // ② Prevent the agent from rebuilding/restoring default prompt
+  mutableSession._baseSystemPrompt = prompt;
+  mutableSession._rebuildSystemPrompt = () => prompt;
+}
+```
+
+**Why override instead of extend?**
+1. **Full control**: OpenClaw needs precise control over tool documentation, safety rules, etc.
+2. **Avoid conflicts**: Default prompt might have conflicting instructions
+3. **Token efficiency**: Don't waste tokens on unused default instructions
+
+### 17.5 Prompt Modes
+
+OpenClaw supports different prompt modes for different contexts:
+
+| Mode | Use Case | Included Sections |
+|------|----------|-------------------|
+| `full` | Main agent, DM sessions | All sections |
+| `minimal` | Sub-agents, spawned tasks | Tooling, Workspace, Runtime only |
+| `none` | Bare-bones contexts | Just identity line |
+
+```typescript
+// For sub-agents, skip verbose sections:
+const isMinimal = promptMode === "minimal" || promptMode === "none";
+
+// Skills section skipped in minimal mode
+if (params.isMinimal) {
+  return [];  // No skills guidance for sub-agents
+}
+```
+
+**Why minimal mode for sub-agents?**
+- Sub-agents have focused tasks, don't need full personality
+- Reduces token usage significantly
+- Faster time-to-first-token
+
+### 17.6 Dynamic Sections
+
+Several sections are dynamically included based on configuration:
+
+#### Tool Availability
+```typescript
+// Only document available tools
+const toolLines = enabledTools.map((tool) => {
+  const summary = coreToolSummaries[tool];
+  return `- ${tool}: ${summary}`;
+});
+
+// Example output:
+// - read: Read file contents
+// - write: Create or overwrite files
+// - exec: Run shell commands (pty available for TTY-required CLIs)
+// - browser: Control web browser
+```
+
+#### Skills (if configured)
+```typescript
+// Only if skills are available
+if (skillsPrompt) {
+  lines.push(
+    "## Skills (mandatory)",
+    "Before replying: scan <available_skills>...",
+    skillsPrompt,  // Contains skill list from workspace
+  );
+}
+```
+
+#### Memory (if memory tools available)
+```typescript
+// Only if memory_search or memory_get tools are enabled
+if (availableTools.has("memory_search") || availableTools.has("memory_get")) {
+  lines.push(
+    "## Memory Recall",
+    "Before answering anything about prior work...",
+  );
+}
+```
+
+### 17.7 Runtime Line
+
+Each request includes runtime context for the agent's situational awareness:
+
+```
+Runtime: agent=main | host=MacBook Pro | repo=/Users/elar/clawd | 
+         os=Darwin 23.6.0 (arm64) | node=v22.22.0 | 
+         model=anthropic/claude-opus-4 | default_model=anthropic/claude-opus-4 | 
+         channel=telegram | capabilities=inlineButtons | thinking=low
+```
+
+**Why include runtime info?**
+- Agent knows its context (which channel, which machine)
+- Can make platform-appropriate decisions (e.g., format for Telegram vs Discord)
+- Helps with debugging ("what model am I using?")
+
+### 17.8 Safety Section
+
+OpenClaw includes Anthropic-inspired safety constraints:
+
+```typescript
+const safetySection = [
+  "## Safety",
+  "You have no independent goals: do not pursue self-preservation, " +
+  "replication, resource acquisition, or power-seeking...",
+  "Prioritize safety and human oversight over completion...",
+  "Do not manipulate or persuade anyone to expand access...",
+];
+```
+
+**Design philosophy**: Safety rules are **hardcoded**, not user-editable, to prevent accidental or malicious removal.
+
+### 17.9 Complete Assembly Flow
+
+```mermaid
+flowchart TB
+    subgraph Sources["Data Sources"]
+        HC["Hardcoded Sections
+        (system-prompt.ts)"]
+        
+        CFG["Config-driven
+        (skills, memory, aliases)"]
+        
+        WS["Workspace Files
+        (AGENTS.md, SOUL.md...)"]
+        
+        RT["Runtime Context
+        (model, channel, time)"]
+    end
+    
+    subgraph Build["buildAgentSystemPrompt()"]
+        direction TB
+        BASE["1. Base identity +
+        Tool documentation"]
+        
+        DYN["2. Dynamic sections
+        (skills, memory, docs)"]
+        
+        CTX["3. Project Context
+        (workspace files)"]
+        
+        RUN["4. Runtime line +
+        Special modes"]
+        
+        BASE --> DYN --> CTX --> RUN
+    end
+    
+    subgraph Apply["applySystemPromptOverrideToSession()"]
+        SET["session.agent.setSystemPrompt()"]
+        PATCH["Patch _baseSystemPrompt
+        _rebuildSystemPrompt"]
+    end
+    
+    HC --> BASE
+    CFG --> DYN
+    WS --> CTX
+    RT --> RUN
+    
+    RUN --> SET
+    SET --> PATCH
+    
+    PATCH -->|"Final prompt"| LLM["LLM API Call"]
+```
+
+### 17.10 Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Inject workspace files every turn** | Immediate reflection of user edits |
+| **Override (not extend) default prompt** | Full control, avoid conflicts |
+| **Hardcode safety rules** | Prevent accidental/malicious removal |
+| **Filter MEMORY.md by session** | Privacy: don't leak to groups |
+| **70/20 truncation split** | Prioritize beginning (instructions) |
+| **Minimal mode for sub-agents** | Token efficiency, focused tasks |
+| **Runtime line with full context** | Agent situational awareness |
+
+### 17.11 Source Files
+
+| File | Responsibility |
+|------|----------------|
+| `src/agents/system-prompt.ts` | Main prompt builder (`buildAgentSystemPrompt`) |
+| `src/agents/pi-embedded-runner/system-prompt.ts` | Override application |
+| `src/agents/bootstrap-files.ts` | Workspace file loading orchestration |
+| `src/agents/pi-embedded-helpers/bootstrap.ts` | Truncation, context file building |
+| `src/agents/workspace.ts` | Workspace file definitions and loading |
 
 ---
 
