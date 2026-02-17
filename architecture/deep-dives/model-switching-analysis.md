@@ -234,32 +234,232 @@ runEmbeddedPiAgent()
 └──────────────────────────────────────────────────────┘
 ```
 
-## Potential Fixes
+## Detailed Problem Analysis & Fix Proposals
 
-### Fix 1: Re-read Auth Store on Auth Errors
+---
+
+### Problem 1: Auth Store 不会在认证错误后刷新
+
+#### 当前代码问题
+
+**位置**: `src/agents/pi-embedded-runner/run.ts:297`
 
 ```typescript
-// Proposed change in run.ts
-const advanceAuthProfile = async (): Promise<boolean> => {
-  // Refresh auth store on failover to pick up runtime changes
-  const freshStore = ensureAuthProfileStore(agentDir, { 
-    allowKeychainPrompt: false,
-    forceReload: true  // New option
+// Auth store 在 run 开始时加载一次，之后不再刷新
+const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
+```
+
+**问题流程**:
+```
+1. Gateway 启动 → 加载 auth-profiles.json 到内存
+2. 用户在外部撤销/更新 API Key
+3. Agent 运行时仍使用内存中的旧 key
+4. 认证失败 → 进入 cooldown
+5. advanceAuthProfile() 尝试下一个 profile，但用的还是同一个 stale authStore
+6. 所有 profile 都失败 → 用户被锁定
+```
+
+**关键代码** (`run.ts:371-376`):
+```typescript
+const resolveApiKeyForCandidate = async (candidate?: string) => {
+  return getApiKeyForModel({
+    model,
+    cfg: params.config,
+    profileId: candidate,
+    store: authStore,  // ❌ 始终使用启动时的 snapshot
+    agentDir,
   });
-  // ... rest of failover logic
 };
 ```
 
-### Fix 2: Immediate Model Switch for Current Turn
+#### 相关 Issues/PRs
+
+| Issue/PR | Status | Description |
+|----------|--------|-------------|
+| **#17873** | OPEN | OAuth provider enters permanent cooldown instead of using refresh token |
+| **#9095** | OPEN | Anthropic OAuth fails with HTTP 401 invalid bearer token |
+| **#8602** | OPEN (PR) | feat(auth): add Anthropic OAuth token refresh ← **主要修复 PR** |
+| **#18624** | OPEN | billingBackoffHours default causes prolonged outages on OAuth token expiry |
+| **#8405** | OPEN | Refresh token reuse errors cause extended provider outages |
+
+#### Fix Proposal
+
+**方案 A: 在 Auth 错误后重新加载 Store**
 
 ```typescript
-// In directive-handling, force re-resolution of model before responding
-if (modelSelection) {
+// src/agents/pi-embedded-runner/run.ts
+const advanceAuthProfile = async (): Promise<boolean> => {
+  if (lockedProfileId) {
+    return false;
+  }
+  
+  // 🔧 NEW: Reload auth store on failover to pick up runtime changes
+  const freshStore = ensureAuthProfileStore(agentDir, { 
+    allowKeychainPrompt: false,
+    forceReload: true  // 强制重新读取文件
+  });
+  
+  // Update local reference
+  Object.assign(authStore, freshStore);
+  
+  let nextIndex = profileIndex + 1;
+  // ... rest of logic
+};
+```
+
+**方案 B: 合并 PR #8602 (Anthropic OAuth token refresh)**
+
+PR #8602 已经实现了:
+- OAuth token 自动刷新机制
+- 与 Claude Code CLI 相同的刷新端点
+- Keychain 同步支持
+
+**建议**: 优先推动 PR #8602 合并，这是社区已验证的方案。
+
+---
+
+### Problem 2: Model Switch 后不显示生效确认
+
+#### 当前代码问题
+
+**位置**: `src/auto-reply/reply/directive-handling.model.ts`
+
+当用户执行 `/model openrouter/claude-sonnet-4-5` 时:
+
+```typescript
+// 当前逻辑只返回简单确认
+return { text: `Model set to ${provider}/${model}` };
+```
+
+**问题**:
+1. 不显示**实际生效**的 model (可能被 allowlist 拦截)
+2. 不显示使用的 **auth profile**
+3. 不提示 **下一条消息才生效** (当前 turn 可能还用旧 model)
+
+#### Model 生效延迟的原因
+
+**代码流程** (`src/auto-reply/reply/get-reply-run.ts`):
+```
+用户消息 "/model X"
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ parseDirectives() → 识别 /model      │
+└──────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ applyModelOverrideToSessionEntry()   │
+│ → sessionEntry.modelOverride = "X"   │
+│ → updateSessionStore() 持久化        │
+└──────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ 返回确认消息 "Model set to X"        │
+│ ⚠️ 此时 LLM client 可能已创建       │
+│    使用的是旧 model                  │
+└──────────────────────────────────────┘
+    │
+    ▼
+下一条消息
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ runEmbeddedPiAgent()                 │
+│ → resolveModel() 读取 modelOverride  │
+│ → 使用新 model ✓                     │
+└──────────────────────────────────────┘
+```
+
+#### 相关 Issues
+
+| Issue | Status | Description |
+|-------|--------|-------------|
+| **#13265** | OPEN | Switch model via telegram |
+| **#5733** | OPEN (stale) | Model-level authProfileId override not respected |
+| **#12754** | OPEN | Cannot switch model free from provider |
+
+#### Fix Proposal
+
+**方案 A: 增强确认消息**
+
+```typescript
+// src/auto-reply/reply/directive-handling.model.ts
+export async function handleModelDirectiveSwitch(params: {
+  modelSelection: ModelDirectiveSelection;
+  sessionEntry: SessionEntry;
+  cfg: OpenClawConfig;
+  agentDir: string;
+}): Promise<ReplyPayload> {
+  const { modelSelection, sessionEntry, cfg, agentDir } = params;
+  
+  // Apply the override
   applyModelOverrideToSessionEntry(sessionEntry, modelSelection);
-  // Force LLM client re-creation for current turn
-  params.llmClientFactory?.invalidate();
+  
+  // 🔧 NEW: Resolve what will actually be used
+  const effective = resolveEffectiveModel({
+    sessionEntry,
+    cfg,
+    agentDir,
+  });
+  
+  // 🔧 NEW: Resolve auth profile that will be used
+  const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
+  const profileOrder = resolveAuthProfileOrder({
+    cfg,
+    store: authStore,
+    provider: effective.provider,
+  });
+  const activeProfile = profileOrder[0] ?? "default";
+  
+  // 🔧 NEW: Build detailed confirmation
+  const lines = [
+    `✅ Model switched`,
+    ``,
+    `Requested: ${modelSelection.provider}/${modelSelection.model}`,
+    `Effective: ${effective.provider}/${effective.model}`,
+    `Auth profile: ${activeProfile}`,
+    ``,
+    `💡 Takes effect on your next message.`,
+  ];
+  
+  // Add warning if model was remapped
+  if (effective.model !== modelSelection.model) {
+    lines.push(`⚠️ Model was remapped (allowlist or alias)`);
+  }
+  
+  return { text: lines.join("\n") };
 }
 ```
+
+**方案 B: 支持即时生效 (更复杂)**
+
+```typescript
+// 在 directive 处理后，abort 当前 run 并重新开始
+if (modelSelection && params.allowImmediateSwitch) {
+  throw new ModelSwitchRestartError(modelSelection);
+}
+
+// 在外层 catch 并重新调用 runEmbeddedPiAgent with new model
+```
+
+**建议**: 方案 A 更安全，可以先实现。方案 B 需要更多架构改动。
+
+---
+
+## 在途 PR 状态总结
+
+| PR | 问题 | 状态 | 建议 |
+|----|------|------|------|
+| **#8602** | Auth profile refresh | OPEN, CI passing, 待合并 | 🔥 高优先级推动合并 |
+| **#19211** | Clear cooldown incomplete | OPEN | 相关但独立 |
+| **#18902** | Format error cooldown cascade | OPEN | 相关但独立 |
+| **#14914** | 403 auth error classification | OPEN | 相关，可作为 #8602 后续 |
+
+---
+
+## Potential Fixes (Original)
 
 ### Fix 3: Better Gateway Process Management
 
