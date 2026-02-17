@@ -238,35 +238,35 @@ runEmbeddedPiAgent()
 
 ---
 
-### Problem 1: Auth Store 不会在认证错误后刷新
+### Problem 1: Auth Store Not Refreshed After Auth Errors
 
-#### 当前代码问题
+#### Current Code Issues
 
-**位置**: `src/agents/pi-embedded-runner/run.ts:297`
+**Location**: `src/agents/pi-embedded-runner/run.ts:297`
 
 ```typescript
-// Auth store 在 run 开始时加载一次，之后不再刷新
+// Auth store is loaded once at run start, never refreshed
 const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
 ```
 
-**问题流程**:
+**Problem Flow**:
 ```
-1. Gateway 启动 → 加载 auth-profiles.json 到内存
-2. 用户在外部撤销/更新 API Key
-3. Agent 运行时仍使用内存中的旧 key
-4. 认证失败 → 进入 cooldown
-5. advanceAuthProfile() 尝试下一个 profile，但用的还是同一个 stale authStore
-6. 所有 profile 都失败 → 用户被锁定
+1. Gateway starts → loads auth-profiles.json into memory
+2. User revokes/updates API Key externally
+3. Agent run still uses stale key from memory
+4. Auth failure → enters cooldown
+5. advanceAuthProfile() tries next profile, but uses same stale authStore
+6. All profiles fail → user is locked out
 ```
 
-**关键代码** (`run.ts:371-376`):
+**Key Code** (`run.ts:371-376`):
 ```typescript
 const resolveApiKeyForCandidate = async (candidate?: string) => {
   return getApiKeyForModel({
     model,
     cfg: params.config,
     profileId: candidate,
-    store: authStore,  // ❌ 始终使用启动时的 snapshot
+    store: authStore,  // ❌ Always uses snapshot from startup
     agentDir,
   });
 };
@@ -284,7 +284,7 @@ const resolveApiKeyForCandidate = async (candidate?: string) => {
 
 #### Fix Proposal
 
-**方案 A: 在 Auth 错误后重新加载 Store**
+**Option A: Reload Store After Auth Errors**
 
 ```typescript
 // src/agents/pi-embedded-runner/run.ts
@@ -296,7 +296,7 @@ const advanceAuthProfile = async (): Promise<boolean> => {
   // 🔧 NEW: Reload auth store on failover to pick up runtime changes
   const freshStore = ensureAuthProfileStore(agentDir, { 
     allowKeychainPrompt: false,
-    forceReload: true  // 强制重新读取文件
+    forceReload: true  // Force re-read from file
   });
   
   // Update local reference
@@ -307,72 +307,72 @@ const advanceAuthProfile = async (): Promise<boolean> => {
 };
 ```
 
-**方案 B: 合并 PR #8602 (Anthropic OAuth token refresh)**
+**Option B: Merge PR #8602 (Anthropic OAuth token refresh)**
 
-PR #8602 已经实现了:
-- OAuth token 自动刷新机制
-- 与 Claude Code CLI 相同的刷新端点
-- Keychain 同步支持
+PR #8602 already implements:
+- Automatic OAuth token refresh mechanism
+- Same refresh endpoint as Claude Code CLI
+- Keychain sync support
 
-**建议**: 优先推动 PR #8602 合并，这是社区已验证的方案。
+**Recommendation**: Prioritize merging PR #8602 — it's a community-validated solution.
 
 ---
 
-### Problem 2: Model Switch 后不显示生效确认
+### Problem 2: No Effective Model Confirmation After Switch
 
-#### 当前代码问题
+#### Current Code Issues
 
-**位置**: `src/auto-reply/reply/directive-handling.model.ts`
+**Location**: `src/auto-reply/reply/directive-handling.model.ts`
 
-当用户执行 `/model openrouter/claude-sonnet-4-5` 时:
+When user runs `/model openrouter/claude-sonnet-4-5`:
 
 ```typescript
-// 当前逻辑只返回简单确认
+// Current logic returns simple confirmation
 return { text: `Model set to ${provider}/${model}` };
 ```
 
-**问题**:
-1. 不显示**实际生效**的 model (可能被 allowlist 拦截)
-2. 不显示使用的 **auth profile**
-3. 不提示 **下一条消息才生效** (当前 turn 可能还用旧 model)
+**Problems**:
+1. Does not show **actually effective** model (may be blocked by allowlist)
+2. Does not show which **auth profile** will be used
+3. Does not indicate **takes effect on next message** (current turn may still use old model)
 
-#### Model 生效延迟的原因
+#### Why Model Switch Has Delayed Effect
 
-**代码流程** (`src/auto-reply/reply/get-reply-run.ts`):
+**Code Flow** (`src/auto-reply/reply/get-reply-run.ts`):
 ```
-用户消息 "/model X"
+User message "/model X"
     │
     ▼
 ┌──────────────────────────────────────┐
-│ parseDirectives() → 识别 /model      │
+│ parseDirectives() → detect /model    │
 └──────────────────────────────────────┘
     │
     ▼
 ┌──────────────────────────────────────┐
 │ applyModelOverrideToSessionEntry()   │
 │ → sessionEntry.modelOverride = "X"   │
-│ → updateSessionStore() 持久化        │
+│ → updateSessionStore() persists      │
 └──────────────────────────────────────┘
     │
     ▼
 ┌──────────────────────────────────────┐
-│ 返回确认消息 "Model set to X"        │
-│ ⚠️ 此时 LLM client 可能已创建       │
-│    使用的是旧 model                  │
+│ Return confirmation "Model set to X" │
+│ ⚠️ LLM client may already be created │
+│    using the OLD model               │
 └──────────────────────────────────────┘
     │
     ▼
-下一条消息
+Next message
     │
     ▼
 ┌──────────────────────────────────────┐
 │ runEmbeddedPiAgent()                 │
-│ → resolveModel() 读取 modelOverride  │
-│ → 使用新 model ✓                     │
+│ → resolveModel() reads modelOverride │
+│ → Uses new model ✓                   │
 └──────────────────────────────────────┘
 ```
 
-#### 相关 Issues
+#### Related Issues
 
 | Issue | Status | Description |
 |-------|--------|-------------|
@@ -380,9 +380,11 @@ return { text: `Model set to ${provider}/${model}` };
 | **#5733** | OPEN (stale) | Model-level authProfileId override not respected |
 | **#12754** | OPEN | Cannot switch model free from provider |
 
+**No in-flight PR directly addresses this issue.**
+
 #### Fix Proposal
 
-**方案 A: 增强确认消息**
+**Option A: Enhanced Confirmation Message**
 
 ```typescript
 // src/auto-reply/reply/directive-handling.model.ts
@@ -397,14 +399,14 @@ export async function handleModelDirectiveSwitch(params: {
   // Apply the override
   applyModelOverrideToSessionEntry(sessionEntry, modelSelection);
   
-  // 🔧 NEW: Resolve what will actually be used
+  // NEW: Resolve what will actually be used
   const effective = resolveEffectiveModel({
     sessionEntry,
     cfg,
     agentDir,
   });
   
-  // 🔧 NEW: Resolve auth profile that will be used
+  // NEW: Resolve auth profile that will be used
   const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
   const profileOrder = resolveAuthProfileOrder({
     cfg,
@@ -413,7 +415,7 @@ export async function handleModelDirectiveSwitch(params: {
   });
   const activeProfile = profileOrder[0] ?? "default";
   
-  // 🔧 NEW: Build detailed confirmation
+  // NEW: Build detailed confirmation
   const lines = [
     `✅ Model switched`,
     ``,
@@ -433,29 +435,29 @@ export async function handleModelDirectiveSwitch(params: {
 }
 ```
 
-**方案 B: 支持即时生效 (更复杂)**
+**Option B: Support Immediate Effect (More Complex)**
 
 ```typescript
-// 在 directive 处理后，abort 当前 run 并重新开始
+// After directive handling, abort current run and restart
 if (modelSelection && params.allowImmediateSwitch) {
   throw new ModelSwitchRestartError(modelSelection);
 }
 
-// 在外层 catch 并重新调用 runEmbeddedPiAgent with new model
+// Catch at outer layer and re-invoke runEmbeddedPiAgent with new model
 ```
 
-**建议**: 方案 A 更安全，可以先实现。方案 B 需要更多架构改动。
+**Recommendation**: Option A is safer and should be implemented first. Option B requires more architectural changes.
 
 ---
 
-## 在途 PR 状态总结
+## In-Flight PR Status Summary
 
-| PR | 问题 | 状态 | 建议 |
-|----|------|------|------|
-| **#8602** | Auth profile refresh | OPEN, CI passing, 待合并 | 🔥 高优先级推动合并 |
-| **#19211** | Clear cooldown incomplete | OPEN | 相关但独立 |
-| **#18902** | Format error cooldown cascade | OPEN | 相关但独立 |
-| **#14914** | 403 auth error classification | OPEN | 相关，可作为 #8602 后续 |
+| PR | Problem | Status | Recommendation |
+|----|---------|--------|----------------|
+| **#8602** | Auth profile refresh | OPEN, CI passing, awaiting merge | 🔥 High priority — push for merge |
+| **#19211** | Clear cooldown incomplete | OPEN | Related but independent |
+| **#18902** | Format error cooldown cascade | OPEN | Related but independent |
+| **#14914** | 403 auth error classification | OPEN | Related, can follow #8602 |
 
 ---
 
