@@ -272,13 +272,13 @@ const resolveApiKeyForCandidate = async (candidate?: string) => {
 };
 ```
 
-#### 相关 Issues/PRs
+#### Related Issues/PRs
 
 | Issue/PR | Status | Description |
 |----------|--------|-------------|
 | **#17873** | OPEN | OAuth provider enters permanent cooldown instead of using refresh token |
 | **#9095** | OPEN | Anthropic OAuth fails with HTTP 401 invalid bearer token |
-| **#8602** | OPEN (PR) | feat(auth): add Anthropic OAuth token refresh ← **主要修复 PR** |
+| **#8602** | OPEN (PR) | feat(auth): add Anthropic OAuth token refresh ← **Primary fix PR** |
 | **#18624** | OPEN | billingBackoffHours default causes prolonged outages on OAuth token expiry |
 | **#8405** | OPEN | Refresh token reuse errors cause extended provider outages |
 
