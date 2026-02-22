@@ -60,6 +60,41 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
   <!-- Mermaid diagrams -->
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    .mermaid-wrapper {
+      position: relative;
+      margin: 1em 0;
+    }
+    .mermaid-toggle {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      padding: 4px 8px;
+      font-size: 12px;
+      background: #f97316;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 10;
+    }
+    .mermaid-toggle:hover {
+      background: #ea580c;
+    }
+    .mermaid-source {
+      display: none;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 1em;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: monospace;
+      font-size: 13px;
+      white-space: pre;
+    }
+    .mermaid-wrapper.show-source .mermaid-diagram { display: none; }
+    .mermaid-wrapper.show-source .mermaid-source { display: block; }
+  </style>
   <script>
     mermaid.initialize({ 
       startOnLoad: false,
@@ -67,11 +102,24 @@
       securityLevel: 'loose'
     });
     
-    // Docsify plugin for Mermaid
+    function toggleMermaid(btn) {
+      const wrapper = btn.closest('.mermaid-wrapper');
+      wrapper.classList.toggle('show-source');
+      btn.textContent = wrapper.classList.contains('show-source') ? 'Diagram' : 'Source';
+    }
+    
+    // Docsify plugin for Mermaid with toggle
     window.$docsify.plugins = (window.$docsify.plugins || []).concat(function(hook) {
       hook.afterEach(function(html) {
         return html.replace(/<pre data-lang="mermaid"><code>([\s\S]*?)<\/code><\/pre>/g, 
-          '<div class="mermaid">$1</div>');
+          function(match, code) {
+            const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return `<div class="mermaid-wrapper">
+              <button class="mermaid-toggle" onclick="toggleMermaid(this)">Source</button>
+              <div class="mermaid-diagram mermaid">${code}</div>
+              <pre class="mermaid-source">${escaped}</pre>
+            </div>`;
+          });
       });
       hook.doneEach(function() {
         mermaid.init(undefined, '.mermaid');
