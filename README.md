@@ -1,42 +1,68 @@
 # OpenClaw Research
 
-Research documentation and analysis of OpenClaw's architecture and implementation.
+> Deep dive into OpenClaw architecture and internals
 
-🌐 **Live Site**: [Coming soon on Vercel]
+This repository documents the internal workings of [OpenClaw](https://github.com/openclaw/openclaw), an AI agent framework. The goal is to understand its architecture through code analysis, issue investigation, and hands-on experimentation.
 
-## Contents
+## Quick Navigation
 
-### Memory System
-- [Memory System Architecture](src/content/docs/architecture/memory/openclaw-memory-system-architecture.md) - Comprehensive analysis of OpenClaw's memory system design
-- [Memory Indexing Mechanisms](src/content/docs/architecture/memory/memory-indexing-mechanisms.md) - How workspace files get indexed into SQLite
+| Module | Description | Status |
+|--------|-------------|--------|
+| [Session](modules/session/README.md) | Session lifecycle, caching, persistence | 📝 Active |
+| [Agent](modules/agent/README.md) | Agent runtime, model switching, transcript | 📝 Active |
+| [Channels](modules/channels/README.md) | Telegram, Discord, WhatsApp integration | 🔍 Basic |
+| [Gateway](modules/gateway/README.md) | HTTP/WebSocket server | 🔍 Basic |
+| [Memory](modules/memory/README.md) | Memory indexing and retrieval | 🔍 Basic |
+| [Plugins](modules/plugins/README.md) | Plugin system and hooks | 🔍 Basic |
+| [Security](modules/security/README.md) | Authentication and pairing | 🔍 Basic |
+| [Browser](modules/browser/README.md) | Browser automation | 🔍 Basic |
 
-### Security
-- [Pairing Mechanism](src/content/docs/architecture/security/pairing-mechanism.md) - DM policy enforcement and owner approval workflows
+## Issue Analysis
 
-## Development
+Real-world bug investigations with root cause analysis and fix proposals:
 
-This site is built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
+| Issue | Module | Severity | Analysis |
+|-------|--------|----------|----------|
+| [#20910](modules/session/issues/20910-timeout-spiral.md) | Session | 🔴 Critical | Model timeout death spiral |
+| [#22506](modules/session/issues/22506-gc-crash.md) | Session | 🔴 Critical | Session GC causes gateway crash |
+| [#18194](modules/session/issues/18194-compaction-timeout.md) | Session | 🔴 Critical | Compaction timeout loses session |
 
-```bash
-# Install dependencies
-pnpm install
+## Architecture Overview
 
-# Start dev server
-pnpm dev
-
-# Build for production
-pnpm build
 ```
-
-## Deployment
-
-This site auto-deploys to Vercel on every push to `main`.
+┌─────────────────────────────────────────────────────────────┐
+│                      Gateway Server                          │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐        │
+│  │Telegram │  │ Discord │  │WhatsApp │  │ WebChat │        │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘        │
+│       └────────────┴────────────┴────────────┘              │
+│                          │                                   │
+│                    ┌─────▼─────┐                            │
+│                    │  Router   │                            │
+│                    └─────┬─────┘                            │
+│                          │                                   │
+│  ┌───────────────────────▼───────────────────────┐         │
+│  │               Session Manager                  │         │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐       │         │
+│  │  │ Store   │  │ Cache   │  │Compactor│       │         │
+│  │  └─────────┘  └─────────┘  └─────────┘       │         │
+│  └───────────────────────┬───────────────────────┘         │
+│                          │                                   │
+│                    ┌─────▼─────┐                            │
+│                    │   Agent   │                            │
+│                    │  Runtime  │                            │
+│                    └─────┬─────┘                            │
+│                          │                                   │
+│  ┌───────────┬───────────┼───────────┬───────────┐         │
+│  │  Memory   │  Plugins  │   Tools   │  Browser  │         │
+│  └───────────┴───────────┴───────────┴───────────┘         │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Contributing
 
-Contributions welcome! Add new documentation as markdown files in `src/content/docs/`.
+This is a personal research project. Feel free to open issues for questions or suggestions.
 
-## Related Links
+## License
 
-- [OpenClaw Main Repository](https://github.com/openclaw/openclaw)
-- [OpenClaw Documentation](https://docs.openclaw.ai)
+Documentation content is MIT licensed. OpenClaw itself is licensed under its own terms.
