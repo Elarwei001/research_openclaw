@@ -2,6 +2,8 @@
 
 > Deep dive into OpenClaw architecture and internals
 
+📖 **Live Site**: https://elarwei001.github.io/research_openclaw/
+
 This repository documents the internal workings of [OpenClaw](https://github.com/openclaw/openclaw), an AI agent framework. The goal is to understand its architecture through code analysis, issue investigation, and hands-on experimentation.
 
 ## Quick Navigation
