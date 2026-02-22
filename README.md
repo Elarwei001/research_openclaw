@@ -23,11 +23,11 @@ This repository documents the internal workings of [OpenClaw](https://github.com
 
 Real-world bug investigations with root cause analysis and fix proposals:
 
-| Issue | Module | Severity | Analysis |
-|-------|--------|----------|----------|
-| [#20910](modules/session/issues/20910-timeout-spiral.md) | Session | 🔴 Critical | Model timeout death spiral |
-| [#22506](modules/session/issues/22506-gc-crash.md) | Session | 🔴 Critical | Session GC causes gateway crash |
-| [#18194](modules/session/issues/18194-compaction-timeout.md) | Session | 🔴 Critical | Compaction timeout loses session |
+| Issue | Module | Severity | PR Status | Analysis |
+|-------|--------|----------|-----------|----------|
+| [#20910](modules/session/issues/20910-timeout-spiral.md) | Session | 🔴 Critical | ✅ [#20911](https://github.com/openclaw/openclaw/pull/20911) | Model timeout death spiral |
+| [#22506](modules/session/issues/22506-gc-crash.md) | Session | 🔴 Critical | ❌ None | Session GC causes gateway crash |
+| [#18194](modules/session/issues/18194-compaction-timeout.md) | Session | 🔴 Critical | ❌ None | Compaction timeout loses session |
 
 ## Architecture Overview
 

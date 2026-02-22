@@ -4,7 +4,7 @@
 
 **Severity**: 🔴 Critical — Bot becomes completely unresponsive
 
-**Status**: No PR submitted
+**Status**: ✅ PR [#20911](https://github.com/openclaw/openclaw/pull/20911) submitted (pending review)
 
 ---
 
