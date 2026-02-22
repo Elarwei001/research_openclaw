@@ -59,7 +59,24 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
   <!-- Mermaid diagrams -->
-  <script src="https://cdn.jsdelivr.net/npm/docsify-mermaid@2/dist/docsify-mermaid.js"></script>
-  <script>mermaid.initialize({ startOnLoad: true });</script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({ 
+      startOnLoad: false,
+      theme: 'default',
+      securityLevel: 'loose'
+    });
+    
+    // Docsify plugin for Mermaid
+    window.$docsify.plugins = (window.$docsify.plugins || []).concat(function(hook) {
+      hook.afterEach(function(html) {
+        return html.replace(/<pre data-lang="mermaid"><code>([\s\S]*?)<\/code><\/pre>/g, 
+          '<div class="mermaid">$1</div>');
+      });
+      hook.doneEach(function() {
+        mermaid.init(undefined, '.mermaid');
+      });
+    });
+  </script>
 </body>
 </html>
