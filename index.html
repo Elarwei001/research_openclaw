@@ -111,18 +111,29 @@
     // Docsify plugin for Mermaid with toggle
     window.$docsify.plugins = (window.$docsify.plugins || []).concat(function(hook) {
       hook.afterEach(function(html) {
-        return html.replace(/<pre data-lang="mermaid"><code>([\s\S]*?)<\/code><\/pre>/g, 
+        return html.replace(/<pre[^>]*data-lang="mermaid"[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, 
           function(match, code) {
-            const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // Decode HTML entities back to original
+            const decoded = code
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&amp;/g, '&')
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'");
+            const escaped = code;  // Keep escaped version for source view
             return `<div class="mermaid-wrapper">
               <button class="mermaid-toggle" onclick="toggleMermaid(this)">Source</button>
-              <div class="mermaid-diagram mermaid">${code}</div>
+              <div class="mermaid-diagram mermaid">${decoded}</div>
               <pre class="mermaid-source">${escaped}</pre>
             </div>`;
           });
       });
       hook.doneEach(function() {
-        mermaid.init(undefined, '.mermaid');
+        try {
+          mermaid.init(undefined, document.querySelectorAll('.mermaid:not([data-processed])'));
+        } catch (e) {
+          console.error('Mermaid init error:', e);
+        }
       });
     });
   </script>
