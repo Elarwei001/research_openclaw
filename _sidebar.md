@@ -31,7 +31,6 @@
 
 - **Issues**
   - **Session**
-    - [#20910 Timeout Spiral](modules/session/issues/20910-timeout-spiral.md)
     - [#22506 GC Crash](modules/session/issues/22506-gc-crash.md)
     - [#18194 Compaction Loss](modules/session/issues/18194-compaction-timeout.md)
 
