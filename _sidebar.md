@@ -10,10 +10,6 @@
     - [Lifecycle](modules/session/lifecycle.md)
     - [Cache Management](modules/session/cache-management.md)
     - [Diagrams](modules/session/diagrams.md)
-    - Issues
-      - [#20910 Timeout Spiral](modules/session/issues/20910-timeout-spiral.md)
-      - [#22506 GC Crash](modules/session/issues/22506-gc-crash.md)
-      - [#18194 Compaction Loss](modules/session/issues/18194-compaction-timeout.md)
   - **Agent**
     - [Overview](modules/agent/README.md)
     - [Model Switching](modules/agent/model-switching.md)
@@ -32,6 +28,15 @@
     - [Overview](modules/security/README.md)
   - **Browser**
     - [Overview](modules/browser/README.md)
+
+- **Issues**
+  - **Session**
+    - [#20910 Timeout Spiral](modules/session/issues/20910-timeout-spiral.md)
+    - [#22506 GC Crash](modules/session/issues/22506-gc-crash.md)
+    - [#18194 Compaction Loss](modules/session/issues/18194-compaction-timeout.md)
+  - **Agent**
+  - **Channels**
+  - **Gateway**
 
 - **References**
   - [OpenClaw Docs](https://docs.openclaw.ai)
