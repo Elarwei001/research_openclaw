@@ -8,6 +8,30 @@
 
 ---
 
+## ⚠️ Terminology Clarification: `context_id` vs `cache_id`
+
+**Issue states**: "Kimi API supports Context caching via `context_id`"
+
+**Official Moonshot Cookbook uses**: `cache_id` via `/v1/caching` API
+
+| Term | Source | Mechanism |
+|------|--------|-----------|
+| `context_id` | Issue #7073, maintainer comments | Unknown — possibly implicit caching in response? |
+| `cache_id` | [MoonshotAI Cookbook](https://github.com/MoonshotAI/MoonshotAI-Cookbook/tree/master/examples/context_caching) | Explicit caching via `/v1/caching` API + `role: "cache"` |
+
+**Two Possibilities**:
+
+1. **Terminology difference**: `context_id` and `cache_id` refer to the same thing (explicit caching API)
+2. **Two separate mechanisms**: 
+   - Explicit: `/v1/caching` → `cache_id` (documented in Cookbook)
+   - Implicit: Response returns `context_id` that can be reused (not found in docs)
+
+**Action Required**: Need clarification from issue author (@vorbei) or Moonshot docs on whether `context_id` is a different mechanism.
+
+**This proposal assumes**: Using the explicit Caching API (`cache_id`) as documented in official Moonshot Cookbook. If `context_id` is a simpler implicit mechanism, the implementation could be significantly easier.
+
+---
+
 ## Caching Mechanism Comparison: Kimi vs Other Models
 
 ### 1. Anthropic Claude (including OpenRouter/Bedrock)
