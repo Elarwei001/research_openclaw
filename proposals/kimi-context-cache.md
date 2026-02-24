@@ -357,11 +357,56 @@ OpenClaw passes `contextCache` to pi-ai, and pi-ai's Moonshot provider implement
 **Implementation Priority**:
 
 ```
-1. Basic functionality: Create cache + inject cache role + TTL expiry detection
-2. Invalidation detection: Rebuild when system prompt hash changes
-3. Concurrency protection: Simple Promise lock to avoid duplicate creation
-4. Config toggle: agents.defaults.models.moonshot/*.params.contextCache.enabled
+1. Basic functionality: Create cache (system + tools) + inject cache role
+2. Invalidation detection: Hash(systemPrompt + tools) change triggers rebuild
+3. Concurrency protection: Inflight Promise map to avoid duplicate creation
+4. TTL management: Use reset_ttl on every request (no expiry tracking needed)
+5. Config toggle: agents.defaults.models.moonshot/*.params.contextCache.enabled
 ```
+
+---
+
+## Key Optimization: Cache System + Tools Together
+
+Since Kimi supports caching both messages AND tools, the implementation should cache:
+- System prompt (static per session)
+- Tool definitions (static per agent config)
+
+This means each request only sends:
+```typescript
+messages: [
+  { role: "cache", content: "cache_id=xxx;reset_ttl=3600" },  // Cached: system + tools
+  { role: "user", content: "..." },      // New messages only
+  { role: "assistant", content: "..." },
+  { role: "user", content: "current question" }
+]
+```
+
+**Token Savings Example**:
+
+| Component | Tokens | Without Cache | With Cache |
+|-----------|--------|---------------|------------|
+| System prompt | ~2000 | ✅ Sent | ❌ Cached |
+| Tool definitions | ~3000 | ✅ Sent | ❌ Cached |
+| Conversation history | ~1000 | ✅ Sent | ✅ Sent |
+| **Total per request** | | ~6000 | ~1000 |
+
+**Simplified Invalidation Logic**:
+
+```typescript
+type CacheEntry = {
+  cacheId: string;
+  contentHash: string;  // Hash of system prompt + tools JSON
+  // No need for createdAt/ttl - we use reset_ttl on every request
+};
+
+function shouldInvalidate(entry: CacheEntry, current: { system: string; tools: Tool[] }): boolean {
+  const currentHash = hash(JSON.stringify({ system: current.system, tools: current.tools }));
+  return entry.contentHash !== currentHash;
+}
+```
+
+No TTL expiry check needed — `reset_ttl=3600` auto-extends on every use.
 
 ---
 
