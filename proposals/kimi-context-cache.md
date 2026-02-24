@@ -23,7 +23,56 @@
 | `cache_id` | Used in `role: "cache"` message | Reference to the cache when querying |
 | `context_cache_object` | API response `object` field | The object type name |
 
-**Conclusion**: There is only ONE caching mechanism — the explicit `/v1/caching` API. The issue author used `context_id` loosely to refer to `cache_id`.
+**Conclusion**: ~~There is only ONE caching mechanism — the explicit `/v1/caching` API.~~ **UPDATE**: See below — there are actually TWO mechanisms for different model families.
+
+---
+
+## ⚠️ Critical Discovery: Two Different Caching Mechanisms
+
+**Tested on 2026-02-24** with real API calls:
+
+| Model Family | Caching Mechanism | API Support |
+|--------------|-------------------|-------------|
+| `moonshot-v1-*` | Explicit `/v1/caching` API | ✅ Works |
+| `kimi-k2.*` | **Automatic prefix caching** | ✅ Works (no API call needed) |
+
+### Evidence: Kimi K2 Automatic Prefix Caching
+
+```bash
+# First request
+curl .../chat/completions -d '{"model": "kimi-k2.5", "messages": [...]}'
+# Response: { "usage": { "prompt_tokens": 1113, "completion_tokens": 5 } }
+
+# Second request (same system prompt)
+curl .../chat/completions -d '{"model": "kimi-k2.5", "messages": [...]}'
+# Response: { "usage": { 
+#   "prompt_tokens": 1113, 
+#   "cached_tokens": 1024,  ← Automatic cache!
+#   "prompt_tokens_details": { "cached_tokens": 1024 }
+# } }
+```
+
+### Evidence: `/v1/caching` API Only Supports moonshot-v1
+
+```bash
+# moonshot-v1 → Works
+curl .../caching -d '{"model": "moonshot-v1", ...}'
+# Response: { "id": "cache-xxx", "status": "pending" }
+
+# kimi-k2.5 → Fails
+curl .../caching -d '{"model": "kimi-k2.5", ...}'
+# Response: { "error": { "message": "model family is invalid" } }
+
+# kimi-k2 → Fails
+curl .../caching -d '{"model": "kimi-k2", ...}'
+# Response: { "error": { "message": "model family is invalid" } }
+```
+
+### Implications for Implementation
+
+1. **For `moonshot-v1-*`**: Use Solution B (explicit `/v1/caching` wrapper)
+2. **For `kimi-k2.*`**: No wrapper needed — automatic caching works like Anthropic
+3. **For `usage.ts`**: Must handle both `cached_tokens` (top-level) and `prompt_tokens_details.cached_tokens` (nested)
 
 ---
 
@@ -105,13 +154,15 @@ const result = await model.generateContent("User question");
 
 ### 4. Moonshot Kimi
 
+#### 4a. moonshot-v1-* (Explicit Caching API)
+
 **Mechanism**: Caching API (Independent Cache Management + Special Role)
 
 ```typescript
 // 1. Create cache (separate API)
 POST /v1/caching
 { 
-  model: "moonshot-v1", 
+  model: "moonshot-v1",  // Only moonshot-v1 family supported!
   messages: [...], 
   tools: [...],      // Optional: can cache tool definitions too
   name: "MyCache",   // Optional: human-readable name
@@ -146,6 +197,44 @@ POST /v1/chat/completions
 - ⚠️ Extra HTTP call required: Cache creation is a separate request
 - ✅ Can cache tools: Tool definitions can be included in cache
 - ✅ TTL extension: Can reset TTL on each use via `reset_ttl` parameter
+
+#### 4b. kimi-k2.* (Automatic Prefix Caching)
+
+**Mechanism**: Automatic Prefix Caching (like Anthropic)
+
+```typescript
+// No explicit cache creation needed!
+// Just send requests with the same prefix, caching happens automatically
+
+POST /v1/chat/completions
+{
+  model: "kimi-k2.5",
+  messages: [
+    { role: "system", content: "Long system prompt..." },
+    { role: "user", content: "Question 1" }
+  ]
+}
+// Response: { usage: { prompt_tokens: 1113 } }
+
+// Second request with same system prompt
+POST /v1/chat/completions
+{
+  model: "kimi-k2.5",
+  messages: [
+    { role: "system", content: "Long system prompt..." },  // Same prefix
+    { role: "user", content: "Question 2" }
+  ]
+}
+// Response: { usage: { prompt_tokens: 1113, cached_tokens: 1024, 
+//                      prompt_tokens_details: { cached_tokens: 1024 } } }
+```
+
+**Characteristics**:
+- ✅ Automatic: No explicit cache management needed
+- ✅ Stateless: Each request is self-contained
+- ✅ Transparent: `cached_tokens` in usage shows cache hit
+- ✅ No additional API calls
+- ⚠️ Cannot cache tools explicitly (only message prefix)
 
 ---
 
@@ -498,6 +587,39 @@ Is cache storage billed separately? **Needs confirmation from Moonshot pricing p
 
 ---
 
+## Implementation Status
+
+### PR #25104: Moonshot Context Caching
+
+**Files Changed**:
+- `src/agents/moonshot-cache.ts` (~280 lines) - Cache wrapper implementation
+- `src/agents/moonshot-cache.test.ts` - Unit tests (17 tests)
+- `src/agents/pi-embedded-runner/extra-params.ts` (+20 lines) - Integration
+- `src/agents/usage.ts` (+6 lines) - Support for `prompt_tokens_details.cached_tokens`
+- `test/moonshot-cache.e2e.test.ts` - E2E tests
+
+**Key Design Decisions**:
+1. **sessionKey-based caching**: One cache entry per session, invalidated on content hash change
+2. **Async IIFE pattern**: Resolve cache BEFORE streaming to avoid race condition
+3. **FIFO eviction**: `MAX_CACHE_SIZE=1000` prevents memory leak
+4. **Model filtering**: Only `moonshot-v1-*` uses explicit caching; K2 uses automatic prefix caching
+
+**Configuration**:
+```yaml
+agents:
+  defaults:
+    models:
+      moonshot/moonshot-v1-32k:
+        params:
+          contextCache:
+            enabled: true
+            ttl: 3600      # Default: 3600 seconds
+            resetTtl: 3600 # Extend TTL on each request
+```
+
+---
+
 *Created: 2026-02-23*
 *Updated: 2026-02-24 - Added mechanism comparison, reuse barriers analysis, multi-solution comparison*
-*Status: Ready for review*
+*Updated: 2026-02-24 - **Critical discovery**: K2 uses automatic prefix caching, moonshot-v1 uses explicit API*
+*Status: Implementation complete, PR under review*
