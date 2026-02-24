@@ -8,27 +8,22 @@
 
 ---
 
-## ⚠️ Terminology Clarification: `context_id` vs `cache_id`
+## ✅ Terminology Clarification: `context_id` = `cache_id`
 
 **Issue states**: "Kimi API supports Context caching via `context_id`"
 
-**Official Moonshot Cookbook uses**: `cache_id` via `/v1/caching` API
+**Official Moonshot API uses**: `cache_id` via `/v1/caching` API
 
-| Term | Source | Mechanism |
-|------|--------|-----------|
-| `context_id` | Issue #7073, maintainer comments | Unknown — possibly implicit caching in response? |
-| `cache_id` | [MoonshotAI Cookbook](https://github.com/MoonshotAI/MoonshotAI-Cookbook/tree/master/examples/context_caching) | Explicit caching via `/v1/caching` API + `role: "cache"` |
+**Confirmed**: After researching [Tencent Cloud article](https://cloud.tencent.com/developer/article/2434148) and [MoonshotAI Cookbook](https://github.com/MoonshotAI/MoonshotAI-Cookbook/tree/master/examples/context_caching), the `context_id` mentioned in Issue #7073 is the same as `cache_id`. The terminology difference comes from:
 
-**Two Possibilities**:
+| Term | Where it appears | Actual meaning |
+|------|------------------|----------------|
+| `context_id` | Issue #7073, maintainer comments | Informal name for the caching feature |
+| `id` | API response field | The cache identifier (e.g., `cache-essqmysd6h1111dauub1`) |
+| `cache_id` | Used in `role: "cache"` message | Reference to the cache when querying |
+| `context_cache_object` | API response `object` field | The object type name |
 
-1. **Terminology difference**: `context_id` and `cache_id` refer to the same thing (explicit caching API)
-2. **Two separate mechanisms**: 
-   - Explicit: `/v1/caching` → `cache_id` (documented in Cookbook)
-   - Implicit: Response returns `context_id` that can be reused (not found in docs)
-
-**Action Required**: Need clarification from issue author (@vorbei) or Moonshot docs on whether `context_id` is a different mechanism.
-
-**This proposal assumes**: Using the explicit Caching API (`cache_id`) as documented in official Moonshot Cookbook. If `context_id` is a simpler implicit mechanism, the implementation could be significantly easier.
+**Conclusion**: There is only ONE caching mechanism — the explicit `/v1/caching` API. The issue author used `context_id` loosely to refer to `cache_id`.
 
 ---
 
@@ -115,14 +110,30 @@ const result = await model.generateContent("User question");
 ```typescript
 // 1. Create cache (separate API)
 POST /v1/caching
-{ model: "...", messages: [...], ttl: 3600 }
-// Returns { id: "cache_xxx" }
+{ 
+  model: "moonshot-v1", 
+  messages: [...], 
+  tools: [...],      // Optional: can cache tool definitions too
+  name: "MyCache",   // Optional: human-readable name
+  ttl: 3600          // Cache lifetime in seconds
+}
+// Returns:
+{
+  id: "cache-essqmysd6h1111dauub1",  // The cache_id to use
+  object: "context_cache_object",
+  status: "pending",
+  tokens: 72,
+  expired_at: 1718847499
+}
 
 // 2. Use cache (special role)
 POST /v1/chat/completions
 {
   messages: [
-    { role: "cache", content: "cache_id=cache_xxx" },  // Special role
+    { 
+      role: "cache", 
+      content: "cache_id=cache-essqmysd6h1111dauub1;reset_ttl=3600"  // Can extend TTL on use
+    },
     { role: "user", content: "Question" }
   ]
 }
@@ -133,6 +144,8 @@ POST /v1/chat/completions
 - ⚠️ Stateful: Requires persisting cache_id
 - ⚠️ Non-standard role: `role: "cache"` is not OpenAI-compatible format
 - ⚠️ Extra HTTP call required: Cache creation is a separate request
+- ✅ Can cache tools: Tool definitions can be included in cache
+- ✅ TTL extension: Can reset TTL on each use via `reset_ttl` parameter
 
 ---
 
