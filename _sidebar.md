@@ -29,6 +29,10 @@
   - **Browser**
     - [Overview](modules/browser/README.md)
 
+- **Proposals**
+  - [Agent-to-Agent Mirror](proposals/agent-to-agent-mirror.md)
+  - [Kimi Context Cache](proposals/kimi-context-cache.md)
+
 - **Issues**
   - **Session**
     - [#22506 GC Crash](modules/session/issues/22506-gc-crash.md)
