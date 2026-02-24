@@ -328,12 +328,83 @@ OpenClaw passes `contextCache` to pi-ai, and pi-ai's Moonshot provider implement
 
 ---
 
-## Open Questions
+## Open Questions (Partially Resolved)
 
-1. **Usage statistics**: How does the `usage` field reflect cache hit/miss when using cache?
-2. **Concurrent creation**: How to avoid duplicate cache creation during concurrent requests in the same session?
-3. **Cache size limit**: Maximum token count for a single cache?
-4. **Pricing**: Is cache storage billed separately?
+### Q1: Usage Statistics — How does `usage` reflect cache hit/miss?
+
+**Current Status**: Moonshot cookbook examples don't show usage response format. Needs actual testing.
+
+**Two Possible Scenarios**:
+
+| Scenario | Usage Format | OpenClaw Compatibility |
+|----------|--------------|------------------------|
+| A: Anthropic-compatible | `{ cache_read_input_tokens, cache_creation_input_tokens }` | ✅ Works out of box, no changes needed |
+| B: Custom format | `{ cached_tokens, cache_hit: true }` or no such field | ❌ Requires mapping in `usage.ts` |
+
+**Recommendation**: During implementation, log raw usage response first, then decide whether to extend `parseRawUsage()`.
+
+---
+
+### Q2: Concurrent Creation — How to avoid duplicate cache creation?
+
+**Problem Scenario**:
+```
+T0: Request A arrives → no cache → starts creating cache
+T1: Request B arrives → no cache yet (A still creating) → starts creating ANOTHER cache ❌
+```
+
+**Solution: Inflight Promise Map (Coalescing Pattern)**
+
+```typescript
+const inflightCreation = new Map<string, Promise<string>>();
+
+async function getOrCreateCache(sessionKey: string, ...): Promise<string> {
+  // 1. Check existing cache
+  const existing = cacheStore.get(sessionKey);
+  if (existing && !needsRefresh(existing)) {
+    return existing.id;
+  }
+
+  // 2. Check if creation already in progress
+  const inflight = inflightCreation.get(sessionKey);
+  if (inflight) {
+    return inflight;  // Await the same promise
+  }
+
+  // 3. Create new cache with lock
+  const creationPromise = (async () => {
+    try {
+      const cacheId = await createKimiCache(...);
+      cacheStore.set(sessionKey, { id: cacheId, ... });
+      return cacheId;
+    } finally {
+      inflightCreation.delete(sessionKey);  // Release lock
+    }
+  })();
+
+  inflightCreation.set(sessionKey, creationPromise);
+  return creationPromise;
+}
+```
+
+**Result**:
+```
+T0: Request A → creates promise, stores in inflightCreation
+T1: Request B → finds inflight promise → awaits same promise
+T2: Cache created → both A and B get same cacheId ✅
+```
+
+This is a standard "coalescing" pattern. No mutex needed in Node.js single-threaded environment.
+
+---
+
+### Q3: Cache Size Limit
+
+Maximum token count for a single cache? **Needs confirmation from Moonshot docs.**
+
+### Q4: Pricing
+
+Is cache storage billed separately? **Needs confirmation from Moonshot pricing page.**
 
 ---
 
