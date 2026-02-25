@@ -1,10 +1,10 @@
-# Feishu Document API: Native Table Support via Descendant API
+# Feishu Document API: Rich Markdown Support via Descendant API
 
 **Author**: elarwei_ai  
 **Date**: 2026-02-26  
 **Status**: Implemented & Verified  
 **Issue**: [#26222](https://github.com/openclaw/openclaw/issues/26222)  
-**Branch**: `feat/feishu-docx-table`
+**Branch**: `feat/feishu-rich-markdown`
 
 ## Executive Summary
 
