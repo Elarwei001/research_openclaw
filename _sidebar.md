@@ -38,6 +38,9 @@
     - [#22506 GC Crash](modules/session/issues/22506-gc-crash.md)
     - [#18194 Compaction Loss](modules/session/issues/18194-compaction-timeout.md)
 
+- **Embodied AI**
+  - [Embodied-AI-Guide 分析](embodied-ai/embodied-ai-guide-analysis.md)
+
 - **References**
   - [OpenClaw Docs](https://docs.openclaw.ai)
   - [GitHub](https://github.com/openclaw/openclaw)
